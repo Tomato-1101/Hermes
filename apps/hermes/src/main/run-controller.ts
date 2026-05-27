@@ -260,10 +260,15 @@ export class RunController {
   private async ensureProviderFor(flowId: string): Promise<void> {
     if (this.provider && this.provider.isStarted()) return;
     const profile = flowProfileDir(flowId);
+    // Prefer the system-installed Google Chrome over Playwright's bundled
+    // Chromium so we don't have to download a separate browser binary. If
+    // Chrome isn't installed the WebProvider will fall back to Chromium —
+    // user can install Chrome from the official site or invoke
+    // `npx playwright install chromium` themselves.
     this.provider = createWebProvider({
       profileDir: profile,
       headless: false,
-      channel: 'chromium',
+      channel: 'chrome',
     });
     try {
       await this.provider.start();
