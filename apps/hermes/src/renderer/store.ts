@@ -1,12 +1,21 @@
 /**
  * Renderer state — zustand store.
  *
- * Holds the currently open Flow plus run/recorder state. Keeps the API
- * minimal: load / select / mutate steps. Persistence happens via the
- * `flow:save` IPC; we don't auto-save on every keystroke, so the user
- * presses Save to commit.
+ * Holds the currently open Flow plus run/recorder state, with a JSON
+ * Patch-backed undo/redo history. Mutating actions take a snapshot of
+ * the previous flow and push it onto the history stack; undo pops one
+ * snapshot back, redo replays the last undo.
+ *
+ * Persistence happens via the `flow:save` IPC; we don't auto-save on
+ * every keystroke, so the user presses Save to commit.
  */
 import { create } from 'zustand';
+import {
+  diffFlow,
+  applyFlowPatch,
+  type Flow as IRFlow,
+  type FlowPatch,
+} from '@hermes/ir';
 
 export type FlowSummary = {
   id: string;
@@ -55,6 +64,11 @@ type State = {
   recording: boolean;
   running: boolean;
   log: LogEntry[];
+  /** History of "undo patches" — each entry is a patch that, applied to the
+   *  current flow, returns to the prior state. Top is most recent. */
+  undoStack: FlowPatch[];
+  /** Symmetric: "redo patches" pushed by undo(), popped by redo(). */
+  redoStack: FlowPatch[];
   loadFlows: () => Promise<void>;
   createFlow: (name: string) => Promise<Flow>;
   openFlow: (id: string) => Promise<void>;
@@ -64,104 +78,180 @@ type State = {
   updateStep: (id: string, patch: Partial<Step>) => void;
   removeStep: (id: string) => void;
   moveStep: (id: string, dir: -1 | 1) => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
   setRecording: (running: boolean) => void;
   setRunning: (running: boolean) => void;
   appendLog: (entry: LogEntry) => void;
   clearLog: () => void;
 };
 
-export const useStore = create<State>((set, get) => ({
-  flows: [],
-  currentFlow: null,
-  selectedStepId: null,
-  dirty: false,
-  recording: false,
-  running: false,
-  log: [],
+const HISTORY_LIMIT = 100;
 
-  async loadFlows() {
-    const { flows } = (await window.hermes.flowList()) as { flows: FlowSummary[] };
-    set({ flows });
-  },
+export const useStore = create<State>((set, get) => {
+  /**
+   * Capture an undo patch for the transition from `prev` to `next` and
+   * push it on the undo stack. Clears the redo stack (any pending redo
+   * is invalidated by a new edit).
+   */
+  const recordEdit = (prev: Flow, next: Flow): void => {
+    const undoPatch = diffFlow(next as unknown as IRFlow, prev as unknown as IRFlow);
+    const undoStack = [...get().undoStack, undoPatch].slice(-HISTORY_LIMIT);
+    set({ undoStack, redoStack: [] });
+  };
 
-  async createFlow(name: string) {
-    const { flow } = (await window.hermes.flowCreate(name)) as { flow: Flow };
-    set({ currentFlow: flow, selectedStepId: null, dirty: false });
-    await get().loadFlows();
-    return flow;
-  },
+  return {
+    flows: [],
+    currentFlow: null,
+    selectedStepId: null,
+    dirty: false,
+    recording: false,
+    running: false,
+    log: [],
+    undoStack: [],
+    redoStack: [],
 
-  async openFlow(id: string) {
-    const { flow } = (await window.hermes.flowOpen(id)) as { flow: Flow };
-    set({ currentFlow: flow, selectedStepId: null, dirty: false });
-  },
+    async loadFlows() {
+      const { flows } = (await window.hermes.flowList()) as { flows: FlowSummary[] };
+      set({ flows });
+    },
 
-  async saveFlow() {
-    const flow = get().currentFlow;
-    if (!flow) return;
-    await window.hermes.flowSave(flow);
-    set({ dirty: false });
-    await get().loadFlows();
-  },
+    async createFlow(name: string) {
+      const { flow } = (await window.hermes.flowCreate(name)) as { flow: Flow };
+      set({
+        currentFlow: flow,
+        selectedStepId: null,
+        dirty: false,
+        undoStack: [],
+        redoStack: [],
+      });
+      await get().loadFlows();
+      return flow;
+    },
 
-  selectStep(id: string | null) {
-    set({ selectedStepId: id });
-  },
+    async openFlow(id: string) {
+      const { flow } = (await window.hermes.flowOpen(id)) as { flow: Flow };
+      set({
+        currentFlow: flow,
+        selectedStepId: null,
+        dirty: false,
+        undoStack: [],
+        redoStack: [],
+      });
+    },
 
-  appendStep(step: Step) {
-    const flow = get().currentFlow;
-    if (!flow) return;
-    set({
-      currentFlow: { ...flow, steps: [...flow.steps, step] },
-      dirty: true,
-    });
-  },
+    async saveFlow() {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      await window.hermes.flowSave(flow);
+      set({ dirty: false });
+      await get().loadFlows();
+    },
 
-  updateStep(id: string, patch: Partial<Step>) {
-    const flow = get().currentFlow;
-    if (!flow) return;
-    const steps = flow.steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
-    set({ currentFlow: { ...flow, steps }, dirty: true });
-  },
+    selectStep(id: string | null) {
+      set({ selectedStepId: id });
+    },
 
-  removeStep(id: string) {
-    const flow = get().currentFlow;
-    if (!flow) return;
-    set({
-      currentFlow: { ...flow, steps: flow.steps.filter((s) => s.id !== id) },
-      dirty: true,
-      selectedStepId: get().selectedStepId === id ? null : get().selectedStepId,
-    });
-  },
+    appendStep(step: Step) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const next = { ...flow, steps: [...flow.steps, step] };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true });
+    },
 
-  moveStep(id: string, dir: -1 | 1) {
-    const flow = get().currentFlow;
-    if (!flow) return;
-    const idx = flow.steps.findIndex((s) => s.id === id);
-    if (idx < 0) return;
-    const next = idx + dir;
-    if (next < 0 || next >= flow.steps.length) return;
-    const steps = [...flow.steps];
-    const tmp = steps[idx]!;
-    steps[idx] = steps[next]!;
-    steps[next] = tmp;
-    set({ currentFlow: { ...flow, steps }, dirty: true });
-  },
+    updateStep(id: string, patch: Partial<Step>) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const steps = flow.steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true });
+    },
 
-  setRecording(running: boolean) {
-    set({ recording: running });
-  },
+    removeStep(id: string) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const next = { ...flow, steps: flow.steps.filter((s) => s.id !== id) };
+      recordEdit(flow, next);
+      set({
+        currentFlow: next,
+        dirty: true,
+        selectedStepId: get().selectedStepId === id ? null : get().selectedStepId,
+      });
+    },
 
-  setRunning(running: boolean) {
-    set({ running });
-  },
+    moveStep(id: string, dir: -1 | 1) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const idx = flow.steps.findIndex((s) => s.id === id);
+      if (idx < 0) return;
+      const nextIdx = idx + dir;
+      if (nextIdx < 0 || nextIdx >= flow.steps.length) return;
+      const steps = [...flow.steps];
+      const tmp = steps[idx]!;
+      steps[idx] = steps[nextIdx]!;
+      steps[nextIdx] = tmp;
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true });
+    },
 
-  appendLog(entry: LogEntry) {
-    const log = [...get().log, entry].slice(-500);
-    set({ log });
-  },
+    undo() {
+      const flow = get().currentFlow;
+      const undoStack = get().undoStack;
+      if (!flow || undoStack.length === 0) return;
+      const top = undoStack[undoStack.length - 1]!;
+      const restored = applyFlowPatch(flow as unknown as IRFlow, top) as unknown as Flow;
+      const redoPatch = diffFlow(restored as unknown as IRFlow, flow as unknown as IRFlow);
+      set({
+        currentFlow: restored,
+        undoStack: undoStack.slice(0, -1),
+        redoStack: [...get().redoStack, redoPatch].slice(-HISTORY_LIMIT),
+        dirty: true,
+      });
+    },
 
-  clearLog() {
-    set({ log: [] });
-  },
-}));
+    redo() {
+      const flow = get().currentFlow;
+      const redoStack = get().redoStack;
+      if (!flow || redoStack.length === 0) return;
+      const top = redoStack[redoStack.length - 1]!;
+      const next = applyFlowPatch(flow as unknown as IRFlow, top) as unknown as Flow;
+      const undoPatch = diffFlow(next as unknown as IRFlow, flow as unknown as IRFlow);
+      set({
+        currentFlow: next,
+        redoStack: redoStack.slice(0, -1),
+        undoStack: [...get().undoStack, undoPatch].slice(-HISTORY_LIMIT),
+        dirty: true,
+      });
+    },
+
+    canUndo() {
+      return get().undoStack.length > 0;
+    },
+
+    canRedo() {
+      return get().redoStack.length > 0;
+    },
+
+    setRecording(running: boolean) {
+      set({ recording: running });
+    },
+
+    setRunning(running: boolean) {
+      set({ running });
+    },
+
+    appendLog(entry: LogEntry) {
+      const log = [...get().log, entry].slice(-500);
+      set({ log });
+    },
+
+    clearLog() {
+      set({ log: [] });
+    },
+  };
+});

@@ -25,6 +25,26 @@ export function App() {
     void window.hermes.appInfo().then(setAppInfo as never);
   }, []);
 
+  // Global Undo/Redo keyboard shortcuts.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        useStore.getState().undo();
+      } else if ((e.key === 'z' && e.shiftKey) || e.key === 'y') {
+        e.preventDefault();
+        useStore.getState().redo();
+      } else if (e.key === 's') {
+        e.preventDefault();
+        void useStore.getState().saveFlow();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   useEffect(() => {
     void useStore.getState().loadFlows();
     const unsub = window.hermes.onEvent((raw) => {
@@ -136,6 +156,10 @@ function Editor() {
   const selectStep = useStore((s) => s.selectStep);
   const removeStep = useStore((s) => s.removeStep);
   const moveStep = useStore((s) => s.moveStep);
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
+  const undoStackLen = useStore((s) => s.undoStack.length);
+  const redoStackLen = useStore((s) => s.redoStack.length);
 
   if (!flow) {
     return (
@@ -193,6 +217,12 @@ function Editor() {
             disabled={recording || flow.steps.length === 0}
           >
             {running ? '■ 停止' : '▶ 再生'}
+          </button>
+          <button type="button" onClick={undo} disabled={undoStackLen === 0} title="Undo (Cmd+Z)">
+            ↶
+          </button>
+          <button type="button" onClick={redo} disabled={redoStackLen === 0} title="Redo (Cmd+Shift+Z)">
+            ↷
           </button>
           <button type="button" onClick={() => void saveFlow()} disabled={!dirty}>
             保存{dirty ? '*' : ''}
