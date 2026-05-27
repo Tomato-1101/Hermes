@@ -7,5 +7,5 @@
     "incremental": true
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../ir" }]
+  "references": [{ "path": "../ir" }, { "path": "../engine" }]
 }

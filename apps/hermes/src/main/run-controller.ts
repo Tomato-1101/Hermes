@@ -22,7 +22,11 @@ import {
 } from '@hermes/web-provider';
 import { WebRecorder } from '@hermes/recorder-web';
 import { FlowStore } from '@hermes/storage/flow-store';
+import { MacosDesktopAdapter } from '@hermes/desktop-adapter/macos';
+import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
+import { registerDesktopHandlers } from '@hermes/desktop-adapter/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
+import { getSidecarClient } from './sidecar.js';
 import type { EventPushPayload } from '../shared/ipc.js';
 import { IpcChannels } from '../shared/ipc.js';
 
@@ -31,6 +35,7 @@ type EmitFn = (event: EventPushPayload) => void;
 export class RunController {
   private readonly store: FlowStore;
   private provider: WebProvider | null = null;
+  private desktop: DesktopProvider | null = null;
   private recorder: WebRecorder | null = null;
   private currentRecordingFlowId: string | null = null;
   private activeRun: { runId: string; abort: AbortController } | null = null;
@@ -175,19 +180,32 @@ export class RunController {
     if (this.activeRun) throw new Error('Another run is already in progress');
 
     const flow = await this.store.readFlow(flowId);
-    await this.ensureProviderFor(flowId);
-    if (!this.provider) throw new Error('failed to start web provider');
+    const needsWeb = flow.metadata.targets.includes('web') || flow.steps.some(stepHitsLayer('web'));
+    const needsDesktop = flow.metadata.targets.includes('desktop') || flow.steps.some(stepHitsLayer('desktop'));
+
+    if (needsWeb) {
+      await this.ensureProviderFor(flowId);
+      if (!this.provider) throw new Error('failed to start web provider');
+    }
+    if (needsDesktop) {
+      this.ensureDesktopProvider();
+    }
 
     const registry = new HandlerRegistry();
     registerWebHandlers(registry);
+    if (this.desktop) registerDesktopHandlers(registry);
 
     const abort = new AbortController();
     const runId = newId();
     this.activeRun = { runId, abort };
 
+    const providers: { web?: WebProvider; desktop?: DesktopProvider } = {};
+    if (this.provider) providers.web = this.provider;
+    if (this.desktop) providers.desktop = this.desktop;
+
     const executor = new StepExecutor({
       registry,
-      providers: { web: this.provider },
+      providers,
     });
     executor.on((e) => {
       switch (e.type) {
@@ -255,14 +273,39 @@ export class RunController {
     }
   }
 
+  private ensureDesktopProvider(): void {
+    if (this.desktop) return;
+    if (process.platform !== 'darwin') {
+      throw new Error('Desktop automation is currently only supported on macOS');
+    }
+    const client = getSidecarClient();
+    const adapter = new MacosDesktopAdapter({ client });
+    this.desktop = new DesktopProvider(adapter);
+  }
+
   async dispose(): Promise<void> {
     await this.stopRun();
     await this.recorder?.detach();
     this.recorder = null;
     await this.provider?.close();
     this.provider = null;
+    if (this.desktop) {
+      await this.desktop.adapter.dispose();
+      this.desktop = null;
+    }
     this.currentRecordingFlowId = null;
   }
+}
+
+function stepHitsLayer(layer: 'web' | 'desktop'): (s: Step) => boolean {
+  return (step) => {
+    if (step.target?.layer === layer) return true;
+    if (step.children) return step.children.some(stepHitsLayer(layer));
+    if (step.branches) {
+      return step.branches.some((b) => b.steps.some(stepHitsLayer(layer)));
+    }
+    return false;
+  };
 }
 
 function shortenUrl(url: string): string {

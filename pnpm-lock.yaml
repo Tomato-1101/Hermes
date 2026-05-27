@@ -112,6 +112,9 @@ importers:
 
   packages/desktop-adapter:
     dependencies:
+      '@hermes/engine':
+        specifier: workspace:*
+        version: link:../engine
       '@hermes/ir':
         specifier: workspace:*
         version: link:../ir

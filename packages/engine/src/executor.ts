@@ -137,9 +137,10 @@ export class StepExecutor {
         });
         return { outcome: 'completed' };
       default: {
-        const handler = this.registry.get(step.type);
+        const handler = this.registry.get(step.type, step.target?.layer);
         if (!handler) {
-          throw new Error(`No handler registered for step type "${step.type}"`);
+          const layerSuffix = step.target?.layer ? ` (layer="${step.target.layer}")` : '';
+          throw new Error(`No handler registered for step type "${step.type}"${layerSuffix}`);
         }
         const promise = handler.execute(step, ctx);
         return await withTimeout(promise, step.timeoutMs ?? ctx.flow.defaults.timeoutMs, ctx.signal);

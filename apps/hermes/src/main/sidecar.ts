@@ -225,6 +225,19 @@ function locateBinary(): string | null {
 
 const singleton = new Sidecar();
 
+/**
+ * Returns a stable handle compatible with @hermes/desktop-adapter's
+ * SidecarClient interface (just `call` and `dispose`). The handle reuses
+ * the app's existing process / socket and starts the sidecar lazily on
+ * first call.
+ */
+export function getSidecarClient(): { call: (m: string, p?: unknown, t?: number) => Promise<unknown>; dispose: () => void } {
+  return {
+    call: (method, params, timeoutMs) => singleton.call(method, params, timeoutMs),
+    dispose: () => singleton.dispose(),
+  };
+}
+
 export async function pingSidecar(): Promise<SidecarPing> {
   if (process.platform !== 'darwin') {
     return { ok: false, error: 'Sidecar is only available on macOS (phase 0).' };

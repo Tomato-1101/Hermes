@@ -135,7 +135,14 @@ export const webStepHandlers: StepHandler[] = [
   }),
 ];
 
-/** Convenience: register every web handler with an existing registry. */
+/**
+ * Convenience: register every web handler with an existing registry.
+ *
+ * Registers under the `default` layer so steps without an explicit
+ * target.layer (open_url, wait, set_var) and steps with target.layer ===
+ * 'web' both dispatch here. Desktop handlers can then register under the
+ * `desktop` layer and take precedence for desktop-layer targets.
+ */
 export function registerWebHandlers(registry: HandlerRegistry): void {
   for (const h of webStepHandlers) registry.register(h);
 }

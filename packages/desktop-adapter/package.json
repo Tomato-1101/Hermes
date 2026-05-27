@@ -8,7 +8,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./macos": "./src/macos.ts",
-    "./sidecar-client": "./src/sidecar-client.ts"
+    "./sidecar-client": "./src/sidecar-client.ts",
+    "./desktop-provider": "./src/desktop-provider.ts",
+    "./handlers": "./src/handlers.ts"
   },
   "scripts": {
     "lint": "eslint src",
@@ -18,6 +20,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@hermes/engine": "workspace:*",
     "@hermes/ir": "workspace:*"
   },
   "devDependencies": {

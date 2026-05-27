@@ -1,5 +1,5 @@
 export { StepExecutor } from './executor.js';
-export { HandlerRegistry } from './registry.js';
+export { HandlerRegistry, type HandlerLayer } from './registry.js';
 export { nextDelayMs, shouldRetry, sleep } from './retry.js';
 export {
   HermesAbortError,
