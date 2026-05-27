@@ -13,6 +13,7 @@ import { create } from 'zustand';
 import {
   diffFlow,
   applyFlowPatch,
+  newId,
   type Flow as IRFlow,
   type FlowPatch,
 } from '@hermes/ir';
@@ -24,6 +25,8 @@ export type FlowSummary = {
   stepCount: number;
 };
 
+export type Branch = { name: string; condition?: unknown; steps: Step[] };
+
 export type Step = {
   id: string;
   type: string;
@@ -32,6 +35,8 @@ export type Step = {
   target?: unknown;
   params?: Record<string, unknown>;
   meta?: Record<string, unknown>;
+  children?: Step[];
+  branches?: Branch[];
   [k: string]: unknown;
 };
 
@@ -75,6 +80,13 @@ type State = {
   saveFlow: () => Promise<void>;
   selectStep: (id: string | null) => void;
   appendStep: (step: Step) => void;
+  /** Insert a structural step (if/loop/try) with empty children at the top level. */
+  addStructuralStep: (kind: 'if' | 'loop' | 'try') => void;
+  /** Insert a no-op child step into the children of the given structural step. */
+  addChildStep: (parentId: string) => void;
+  /** Insert a no-op step into a named branch (e.g. "catch"/"finally" of a try,
+   *  or "then" — the first branch — of an if). The branch is created if absent. */
+  addBranchStep: (parentId: string, branchName: string) => void;
   updateStep: (id: string, patch: Partial<Step>) => void;
   removeStep: (id: string) => void;
   moveStep: (id: string, dir: -1 | 1) => void;
@@ -89,6 +101,140 @@ type State = {
 };
 
 const HISTORY_LIMIT = 100;
+
+// ---------------------------------------------------------------------------
+// Recursive step tree helpers
+//
+// Steps form a tree via `children` (loop/try body, if-else branch) and
+// `branches[].steps` (if positive branch, try catch/finally). The renderer
+// edits the tree in place, so the mutators below walk the whole structure
+// rather than just the top-level array.
+// ---------------------------------------------------------------------------
+
+const updateInTree = (steps: Step[], id: string, patch: Partial<Step>): Step[] =>
+  steps.map((s) => {
+    if (s.id === id) return { ...s, ...patch };
+    const next: Step = { ...s };
+    if (s.children) next.children = updateInTree(s.children, id, patch);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({ ...b, steps: updateInTree(b.steps, id, patch) }));
+    }
+    return next;
+  });
+
+const removeFromTree = (steps: Step[], id: string): Step[] => {
+  const out: Step[] = [];
+  for (const s of steps) {
+    if (s.id === id) continue;
+    const next: Step = { ...s };
+    if (s.children) next.children = removeFromTree(s.children, id);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({ ...b, steps: removeFromTree(b.steps, id) }));
+    }
+    out.push(next);
+  }
+  return out;
+};
+
+const moveInTree = (steps: Step[], id: string, dir: -1 | 1): Step[] => {
+  const idx = steps.findIndex((s) => s.id === id);
+  if (idx >= 0) {
+    const nextIdx = idx + dir;
+    if (nextIdx < 0 || nextIdx >= steps.length) return steps;
+    const out = [...steps];
+    const tmp = out[idx]!;
+    out[idx] = out[nextIdx]!;
+    out[nextIdx] = tmp;
+    return out;
+  }
+  return steps.map((s) => {
+    const next: Step = { ...s };
+    if (s.children) next.children = moveInTree(s.children, id, dir);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({ ...b, steps: moveInTree(b.steps, id, dir) }));
+    }
+    return next;
+  });
+};
+
+const insertChildInTree = (steps: Step[], parentId: string, child: Step): Step[] =>
+  steps.map((s) => {
+    if (s.id === parentId) {
+      return { ...s, children: [...(s.children ?? []), child] };
+    }
+    const next: Step = { ...s };
+    if (s.children) next.children = insertChildInTree(s.children, parentId, child);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({
+        ...b,
+        steps: insertChildInTree(b.steps, parentId, child),
+      }));
+    }
+    return next;
+  });
+
+const insertBranchStepInTree = (
+  steps: Step[],
+  parentId: string,
+  branchName: string,
+  child: Step,
+): Step[] =>
+  steps.map((s) => {
+    if (s.id === parentId) {
+      const existing = s.branches ?? [];
+      const idx = existing.findIndex((b) => b.name === branchName);
+      const branches =
+        idx >= 0
+          ? existing.map((b, i) =>
+              i === idx ? { ...b, steps: [...b.steps, child] } : b,
+            )
+          : [...existing, { name: branchName, steps: [child] }];
+      return { ...s, branches };
+    }
+    const next: Step = { ...s };
+    if (s.children) next.children = insertBranchStepInTree(s.children, parentId, branchName, child);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({
+        ...b,
+        steps: insertBranchStepInTree(b.steps, parentId, branchName, child),
+      }));
+    }
+    return next;
+  });
+
+/** Build an empty structural step. Branches/children mirror what the engine expects. */
+const newStructuralStep = (kind: 'if' | 'loop' | 'try'): Step => {
+  const id = newId();
+  if (kind === 'if') {
+    return {
+      id,
+      type: 'if',
+      enabled: true,
+      params: { condition: '' },
+      branches: [{ name: 'then', steps: [] }],
+      children: [],
+    };
+  }
+  if (kind === 'loop') {
+    return {
+      id,
+      type: 'loop',
+      enabled: true,
+      params: { kind: 'for', count: 3 },
+      children: [],
+    };
+  }
+  return {
+    id,
+    type: 'try',
+    enabled: true,
+    children: [],
+    branches: [
+      { name: 'catch', steps: [] },
+      { name: 'finally', steps: [] },
+    ],
+  };
+};
 
 export const useStore = create<State>((set, get) => {
   /**
@@ -162,10 +308,49 @@ export const useStore = create<State>((set, get) => {
       set({ currentFlow: next, dirty: true });
     },
 
+    addStructuralStep(kind) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const step = newStructuralStep(kind);
+      const next = { ...flow, steps: [...flow.steps, step] };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true, selectedStepId: step.id });
+    },
+
+    addChildStep(parentId: string) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const child: Step = {
+        id: newId(),
+        type: 'wait',
+        enabled: true,
+        params: { ms: 500 },
+      };
+      const steps = insertChildInTree(flow.steps, parentId, child);
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true, selectedStepId: child.id });
+    },
+
+    addBranchStep(parentId: string, branchName: string) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const child: Step = {
+        id: newId(),
+        type: 'wait',
+        enabled: true,
+        params: { ms: 500 },
+      };
+      const steps = insertBranchStepInTree(flow.steps, parentId, branchName, child);
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true, selectedStepId: child.id });
+    },
+
     updateStep(id: string, patch: Partial<Step>) {
       const flow = get().currentFlow;
       if (!flow) return;
-      const steps = flow.steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
+      const steps = updateInTree(flow.steps, id, patch);
       const next = { ...flow, steps };
       recordEdit(flow, next);
       set({ currentFlow: next, dirty: true });
@@ -174,7 +359,8 @@ export const useStore = create<State>((set, get) => {
     removeStep(id: string) {
       const flow = get().currentFlow;
       if (!flow) return;
-      const next = { ...flow, steps: flow.steps.filter((s) => s.id !== id) };
+      const steps = removeFromTree(flow.steps, id);
+      const next = { ...flow, steps };
       recordEdit(flow, next);
       set({
         currentFlow: next,
@@ -186,14 +372,8 @@ export const useStore = create<State>((set, get) => {
     moveStep(id: string, dir: -1 | 1) {
       const flow = get().currentFlow;
       if (!flow) return;
-      const idx = flow.steps.findIndex((s) => s.id === id);
-      if (idx < 0) return;
-      const nextIdx = idx + dir;
-      if (nextIdx < 0 || nextIdx >= flow.steps.length) return;
-      const steps = [...flow.steps];
-      const tmp = steps[idx]!;
-      steps[idx] = steps[nextIdx]!;
-      steps[nextIdx] = tmp;
+      const steps = moveInTree(flow.steps, id, dir);
+      if (steps === flow.steps) return;
       const next = { ...flow, steps };
       recordEdit(flow, next);
       set({ currentFlow: next, dirty: true });

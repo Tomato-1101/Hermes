@@ -134,8 +134,8 @@ hr {
 .log-entry.error .msg { color: var(--err); }
 
 /* Timeline */
-.timeline ol { list-style: none; padding: 0; margin: 0; }
-.timeline li {
+.timeline-list { list-style: none; padding: 0; margin: 0; }
+.step-node {
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -143,10 +143,15 @@ hr {
   background: var(--bg-elev);
   cursor: pointer;
 }
-.timeline li:hover { border-color: var(--accent); }
-.timeline li.active { border-color: var(--accent-strong); background: var(--bg-active); }
-.step-row { display: grid; grid-template-columns: 28px 100px 1fr auto; gap: 10px; align-items: center; }
-.step-index { color: var(--fg-muted); text-align: right; }
+.step-node:hover { border-color: var(--accent); }
+.step-node.active { border-color: var(--accent-strong); background: var(--bg-active); }
+.step-row { display: grid; grid-template-columns: 60px 100px 1fr auto; gap: 10px; align-items: center; }
+.step-index {
+  color: var(--fg-muted);
+  text-align: right;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px;
+}
 .step-type {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 11px;
@@ -158,6 +163,35 @@ hr {
 .step-label { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step-actions { display: flex; gap: 4px; }
 .step-actions button { padding: 2px 6px; font-size: 10px; }
+
+/* Nested children for if/loop/try */
+.step-children {
+  margin: 8px 0 0 18px;
+  padding: 8px 10px;
+  border-left: 2px dashed var(--border-strong);
+}
+.branch-section { margin-bottom: 8px; }
+.branch-section:last-child { margin-bottom: 0; }
+.branch-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.branch-add {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.toolbar-sep {
+  display: inline-block;
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 4px;
+}
+.small { font-size: 11px; }
 
 /* Inspector */
 .step-editor h3, .step-editor h4, .diag h3 {

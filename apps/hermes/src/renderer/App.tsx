@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useStore, type Step } from './store.js';
 
@@ -152,14 +153,11 @@ function Editor() {
   const saveFlow = useStore((s) => s.saveFlow);
   const log = useStore((s) => s.log);
   const clearLog = useStore((s) => s.clearLog);
-  const selectedStepId = useStore((s) => s.selectedStepId);
-  const selectStep = useStore((s) => s.selectStep);
-  const removeStep = useStore((s) => s.removeStep);
-  const moveStep = useStore((s) => s.moveStep);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const undoStackLen = useStore((s) => s.undoStack.length);
   const redoStackLen = useStore((s) => s.redoStack.length);
+  const addStructuralStep = useStore((s) => s.addStructuralStep);
 
   if (!flow) {
     return (
@@ -218,6 +216,17 @@ function Editor() {
           >
             {running ? '■ 停止' : '▶ 再生'}
           </button>
+          <span className="toolbar-sep" />
+          <button type="button" onClick={() => addStructuralStep('if')} title="if 分岐を追加">
+            + if
+          </button>
+          <button type="button" onClick={() => addStructuralStep('loop')} title="繰り返しを追加">
+            + loop
+          </button>
+          <button type="button" onClick={() => addStructuralStep('try')} title="try/catch を追加">
+            + try
+          </button>
+          <span className="toolbar-sep" />
           <button type="button" onClick={undo} disabled={undoStackLen === 0} title="Undo (Cmd+Z)">
             ↶
           </button>
@@ -232,28 +241,13 @@ function Editor() {
       <div className="pane-body editor-body">
         <section className="timeline">
           {flow.steps.length === 0 ? (
-            <p className="muted">録画ボタンを押すとブラウザが開き、操作がここに記録されます。</p>
+            <p className="muted">
+              録画ボタンを押すとブラウザが開き、操作がここに記録されます。
+              <br />
+              または「+ if / + loop / + try」で制御ステップを追加できます。
+            </p>
           ) : (
-            <ol>
-              {flow.steps.map((step, i) => (
-                <li
-                  key={step.id}
-                  className={selectedStepId === step.id ? 'active' : ''}
-                  onClick={() => selectStep(step.id)}
-                >
-                  <div className="step-row">
-                    <span className="step-index">{i + 1}</span>
-                    <span className="step-type">{step.type}</span>
-                    <span className="step-label">{step.label ?? ''}</span>
-                    <span className="step-actions">
-                      <button onClick={(e) => { e.stopPropagation(); moveStep(step.id, -1); }} title="上へ">↑</button>
-                      <button onClick={(e) => { e.stopPropagation(); moveStep(step.id, 1); }} title="下へ">↓</button>
-                      <button onClick={(e) => { e.stopPropagation(); removeStep(step.id); }} title="削除">×</button>
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ol>
+            <Timeline steps={flow.steps} depth={0} pathPrefix="" />
           )}
         </section>
 
@@ -278,6 +272,240 @@ function Editor() {
 }
 
 // ---------------------------------------------------------------------------
+// Recursive timeline — renders nested if/loop/try children + branches.
+// `depth` controls indent; `pathPrefix` shows the human-readable cursor like
+// "1.then[0]" so the user can match log lines to timeline rows.
+// ---------------------------------------------------------------------------
+
+function Timeline({
+  steps,
+  depth,
+  pathPrefix,
+}: {
+  steps: Step[];
+  depth: number;
+  pathPrefix: string;
+}) {
+  return (
+    <ol className="timeline-list">
+      {steps.map((step, i) => (
+        <StepNode
+          key={step.id}
+          step={step}
+          depth={depth}
+          path={pathPrefix ? `${pathPrefix}.${i + 1}` : `${i + 1}`}
+        />
+      ))}
+    </ol>
+  );
+}
+
+function StepNode({
+  step,
+  depth,
+  path,
+}: {
+  step: Step;
+  depth: number;
+  path: string;
+}) {
+  const selectedStepId = useStore((s) => s.selectedStepId);
+  const selectStep = useStore((s) => s.selectStep);
+  const removeStep = useStore((s) => s.removeStep);
+  const moveStep = useStore((s) => s.moveStep);
+  const addChildStep = useStore((s) => s.addChildStep);
+  const addBranchStep = useStore((s) => s.addBranchStep);
+
+  const isStructural =
+    step.type === 'if' || step.type === 'loop' || step.type === 'try';
+
+  return (
+    <li
+      className={`step-node ${selectedStepId === step.id ? 'active' : ''} depth-${depth}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        selectStep(step.id);
+      }}
+    >
+      <div className="step-row">
+        <span className="step-index">{path}</span>
+        <span className="step-type">{step.type}</span>
+        <span className="step-label">{describeStep(step)}</span>
+        <span className="step-actions">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              moveStep(step.id, -1);
+            }}
+            title="上へ"
+          >
+            ↑
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              moveStep(step.id, 1);
+            }}
+            title="下へ"
+          >
+            ↓
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              removeStep(step.id);
+            }}
+            title="削除"
+          >
+            ×
+          </button>
+        </span>
+      </div>
+      {isStructural && (
+        <div className="step-children">
+          {step.type === 'if' && (
+            <>
+              <BranchSection
+                title={`then (条件成立時) — ${(step.branches?.[0]?.steps.length ?? 0)} 個`}
+                steps={step.branches?.[0]?.steps ?? []}
+                depth={depth + 1}
+                pathPrefix={`${path}.then`}
+                onAdd={(e) => {
+                  e.stopPropagation();
+                  addBranchStep(step.id, step.branches?.[0]?.name ?? 'then');
+                }}
+                addLabel="+ then ステップ"
+              />
+              <BranchSection
+                title={`else (条件不成立時) — ${(step.children?.length ?? 0)} 個`}
+                steps={step.children ?? []}
+                depth={depth + 1}
+                pathPrefix={`${path}.else`}
+                onAdd={(e) => {
+                  e.stopPropagation();
+                  addChildStep(step.id);
+                }}
+                addLabel="+ else ステップ"
+              />
+            </>
+          )}
+          {step.type === 'loop' && (
+            <BranchSection
+              title={`本体 — ${(step.children?.length ?? 0)} 個`}
+              steps={step.children ?? []}
+              depth={depth + 1}
+              pathPrefix={`${path}.body`}
+              onAdd={(e) => {
+                e.stopPropagation();
+                addChildStep(step.id);
+              }}
+              addLabel="+ ループ本体ステップ"
+            />
+          )}
+          {step.type === 'try' && (
+            <>
+              <BranchSection
+                title={`try 本体 — ${(step.children?.length ?? 0)} 個`}
+                steps={step.children ?? []}
+                depth={depth + 1}
+                pathPrefix={`${path}.try`}
+                onAdd={(e) => {
+                  e.stopPropagation();
+                  addChildStep(step.id);
+                }}
+                addLabel="+ try ステップ"
+              />
+              <BranchSection
+                title={`catch — ${(findBranch(step, 'catch')?.steps.length ?? 0)} 個`}
+                steps={findBranch(step, 'catch')?.steps ?? []}
+                depth={depth + 1}
+                pathPrefix={`${path}.catch`}
+                onAdd={(e) => {
+                  e.stopPropagation();
+                  addBranchStep(step.id, 'catch');
+                }}
+                addLabel="+ catch ステップ"
+              />
+              <BranchSection
+                title={`finally — ${(findBranch(step, 'finally')?.steps.length ?? 0)} 個`}
+                steps={findBranch(step, 'finally')?.steps ?? []}
+                depth={depth + 1}
+                pathPrefix={`${path}.finally`}
+                onAdd={(e) => {
+                  e.stopPropagation();
+                  addBranchStep(step.id, 'finally');
+                }}
+                addLabel="+ finally ステップ"
+              />
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function BranchSection({
+  title,
+  steps,
+  depth,
+  pathPrefix,
+  onAdd,
+  addLabel,
+}: {
+  title: string;
+  steps: Step[];
+  depth: number;
+  pathPrefix: string;
+  onAdd: (e: ReactMouseEvent) => void;
+  addLabel: string;
+}) {
+  return (
+    <div className="branch-section">
+      <div className="branch-header muted">{title}</div>
+      {steps.length > 0 && <Timeline steps={steps} depth={depth} pathPrefix={pathPrefix} />}
+      <button
+        type="button"
+        className="branch-add"
+        onClick={onAdd}
+        title="子ステップを追加（wait 500ms）"
+      >
+        {addLabel}
+      </button>
+    </div>
+  );
+}
+
+function findBranch(step: Step, name: string): { name: string; steps: Step[] } | undefined {
+  return step.branches?.find((b) => b.name === name);
+}
+
+/**
+ * One-line summary of a step shown in the timeline row. Structural steps
+ * carry their condition/count so the timeline reads at a glance.
+ */
+function describeStep(step: Step): string {
+  if (step.label) return step.label;
+  const p = step.params ?? {};
+  if (step.type === 'if') return `条件: ${p['condition'] ? String(p['condition']) : '(未設定)'}`;
+  if (step.type === 'loop') {
+    const kind = String(p['kind'] ?? 'for');
+    if (kind === 'for') return `for ${p['count'] ?? 0} 回`;
+    if (kind === 'forEach') return `forEach (${p['asVar'] ?? 'item'})`;
+    return kind;
+  }
+  if (step.type === 'try') return 'try / catch / finally';
+  if (step.type === 'wait') return `${p['ms'] ?? '?'}ms 待機`;
+  if (step.type === 'open_url') return String(p['url'] ?? '');
+  if (step.type === 'type' && typeof p['text'] === 'string') {
+    const t = p['text'] as string;
+    if (t.startsWith('${secrets.')) return '(シークレット)';
+    return t.length > 40 ? t.slice(0, 40) + '…' : t;
+  }
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // Inspector: selected step properties + app diagnostic
 // ---------------------------------------------------------------------------
 
@@ -286,7 +514,7 @@ function Inspector({ appInfo }: { appInfo: AppInfo | null }) {
   const selectedId = useStore((s) => s.selectedStepId);
   const updateStep = useStore((s) => s.updateStep);
 
-  const step = flow?.steps.find((s) => s.id === selectedId) ?? null;
+  const step = selectedId && flow ? findStepRecursive(flow.steps, selectedId) : null;
 
   return (
     <aside className="pane pane-right">
@@ -314,8 +542,29 @@ function Inspector({ appInfo }: { appInfo: AppInfo | null }) {
   );
 }
 
+function findStepRecursive(steps: Step[], id: string): Step | null {
+  for (const s of steps) {
+    if (s.id === id) return s;
+    if (s.children) {
+      const found = findStepRecursive(s.children, id);
+      if (found) return found;
+    }
+    if (s.branches) {
+      for (const b of s.branches) {
+        const found = findStepRecursive(b.steps, id);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
 function StepEditor({ step, onChange }: { step: Step; onChange: (patch: Partial<Step>) => void }) {
   const params = (step.params ?? {}) as Record<string, unknown>;
+  const setParam = (key: string, value: unknown): void => {
+    onChange({ params: { ...params, [key]: value } });
+  };
+
   return (
     <section className="step-editor">
       <h3>ステップ #{step.id.slice(-6)}</h3>
@@ -338,23 +587,116 @@ function StepEditor({ step, onChange }: { step: Step; onChange: (patch: Partial<
           />
         </li>
       </ul>
-      <h4>パラメータ</h4>
-      {Object.keys(params).length === 0 && <p className="muted">なし</p>}
-      <ul className="kv">
-        {Object.entries(params).map(([k, v]) => (
-          <li key={k}>
-            <span className="kv-key">{k}</span>
-            <input
-              className="kv-value"
-              value={typeof v === 'string' ? v : JSON.stringify(v)}
-              onChange={(e) => {
-                const next = { ...params, [k]: e.target.value };
-                onChange({ params: next });
-              }}
-            />
-          </li>
-        ))}
-      </ul>
+
+      {step.type === 'if' && (
+        <>
+          <h4>if 条件</h4>
+          <ul className="kv">
+            <li>
+              <span className="kv-key">condition</span>
+              <input
+                className="kv-value"
+                placeholder="例: ${var.flag} または true"
+                value={String(params['condition'] ?? '')}
+                onChange={(e) => setParam('condition', e.target.value)}
+              />
+            </li>
+          </ul>
+          <p className="muted small">
+            真と評価されたら then 側、偽なら else 側のステップが実行されます。
+            式評価器は今後実装予定です（v1 は文字列の truthy 判定のみ）。
+          </p>
+        </>
+      )}
+
+      {step.type === 'loop' && (
+        <>
+          <h4>ループ設定</h4>
+          <ul className="kv">
+            <li>
+              <span className="kv-key">kind</span>
+              <select
+                className="kv-value"
+                value={String(params['kind'] ?? 'for')}
+                onChange={(e) => setParam('kind', e.target.value)}
+              >
+                <option value="for">for (回数)</option>
+                <option value="forEach">forEach (配列)</option>
+              </select>
+            </li>
+            {String(params['kind'] ?? 'for') === 'for' && (
+              <li>
+                <span className="kv-key">count</span>
+                <input
+                  className="kv-value"
+                  type="number"
+                  min={0}
+                  value={Number(params['count'] ?? 0)}
+                  onChange={(e) => setParam('count', Number(e.target.value))}
+                />
+              </li>
+            )}
+            {String(params['kind']) === 'forEach' && (
+              <>
+                <li>
+                  <span className="kv-key">items (JSON)</span>
+                  <input
+                    className="kv-value"
+                    placeholder='["a","b","c"]'
+                    value={
+                      Array.isArray(params['items'])
+                        ? JSON.stringify(params['items'])
+                        : String(params['items'] ?? '')
+                    }
+                    onChange={(e) => {
+                      try {
+                        setParam('items', JSON.parse(e.target.value));
+                      } catch {
+                        setParam('items', e.target.value);
+                      }
+                    }}
+                  />
+                </li>
+                <li>
+                  <span className="kv-key">asVar</span>
+                  <input
+                    className="kv-value"
+                    placeholder="item"
+                    value={String(params['asVar'] ?? 'item')}
+                    onChange={(e) => setParam('asVar', e.target.value)}
+                  />
+                </li>
+              </>
+            )}
+          </ul>
+        </>
+      )}
+
+      {step.type === 'try' && (
+        <p className="muted small">
+          try 本体が失敗したら catch 内のステップが、最後に必ず finally が実行されます。
+        </p>
+      )}
+
+      {!isStructuralType(step.type) && (
+        <>
+          <h4>パラメータ</h4>
+          {Object.keys(params).length === 0 && <p className="muted">なし</p>}
+          <ul className="kv">
+            {Object.entries(params).map(([k, v]) => (
+              <li key={k}>
+                <span className="kv-key">{k}</span>
+                <input
+                  className="kv-value"
+                  value={typeof v === 'string' ? v : JSON.stringify(v)}
+                  onChange={(e) => setParam(k, e.target.value)}
+                />
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
       {step.target !== undefined && (
         <>
           <h4>ターゲット</h4>
@@ -363,4 +705,8 @@ function StepEditor({ step, onChange }: { step: Step; onChange: (patch: Partial<
       )}
     </section>
   );
+}
+
+function isStructuralType(t: string): boolean {
+  return t === 'if' || t === 'loop' || t === 'try';
 }
