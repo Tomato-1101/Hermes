@@ -185,6 +185,9 @@ importers:
         specifier: ^2.3.0
         version: 2.4.0
     devDependencies:
+      '@hermes/engine':
+        specifier: workspace:*
+        version: link:../engine
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
