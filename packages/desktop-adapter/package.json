@@ -6,7 +6,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./macos": "./src/macos.ts",
+    "./sidecar-client": "./src/sidecar-client.ts"
   },
   "scripts": {
     "lint": "eslint src",

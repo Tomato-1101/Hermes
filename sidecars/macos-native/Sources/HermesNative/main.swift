@@ -130,8 +130,133 @@ let handlers: [String: Handler] = [
             "platform": .string("darwin"),
             "ts": .double(Date().timeIntervalSince1970),
         ])
-    }
+    },
+
+    "accessibility.status": { _ in
+        return .object([
+            "granted": .bool(axPermissionGranted(prompt: false)),
+        ])
+    },
+
+    "accessibility.listApps": { _ in
+        return .object(["apps": .array(listApps())])
+    },
+
+    "accessibility.frontmostApp": { _ in
+        return frontmostApp()
+    },
+
+    "accessibility.elementAtPoint": { params in
+        let (x, y) = try requireXY(params)
+        do {
+            return try elementAtPoint(x: x, y: y)
+        } catch AccessibilityError.permissionDenied {
+            throw RpcDispatchError.applicationError(code: -32001, message: "Accessibility permission not granted")
+        } catch AccessibilityError.axError(let e) {
+            throw RpcDispatchError.applicationError(code: -32002, message: "AX error: \(e.rawValue)")
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "elementAtPoint failed: \(error)")
+        }
+    },
+
+    "screen.mainSize": { _ in
+        return mainScreenSize()
+    },
+
+    "mouse.click": { params in
+        let (x, y) = try requireXY(params)
+        let p = paramsObject(params)
+        let button = (p?["button"]).flatMap { stringValue($0) } ?? "left"
+        let clickCount = (p?["clickCount"]).flatMap { intValue($0) } ?? 1
+        do {
+            try postClick(x: x, y: y, button: button, clickCount: clickCount)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "click failed: \(error)")
+        }
+    },
+
+    "mouse.move": { params in
+        let (x, y) = try requireXY(params)
+        do {
+            try postMouseMove(x: x, y: y)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "move failed: \(error)")
+        }
+    },
+
+    "keyboard.type": { params in
+        let p = paramsObject(params)
+        guard let text = (p?["text"]).flatMap({ stringValue($0) }) else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing text")
+        }
+        let intervalMs = (p?["intervalMs"]).flatMap { intValue($0) } ?? 0
+        do {
+            try postType(text, intervalMs: intervalMs)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "type failed: \(error)")
+        }
+    },
+
+    "keyboard.combo": { params in
+        let p = paramsObject(params)
+        guard let arr = p?["keys"], case let .array(items) = arr else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing keys[]")
+        }
+        let keys = items.compactMap { stringValue($0) }
+        do {
+            try postKeyCombo(keys: keys)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "combo failed: \(error)")
+        }
+    },
 ]
+
+// MARK: - Dispatch helpers
+
+enum RpcDispatchError: Error {
+    case applicationError(code: Int, message: String)
+}
+
+private func paramsObject(_ params: JSONValue?) -> [String: JSONValue]? {
+    guard let p = params, case let .object(dict) = p else { return nil }
+    return dict
+}
+
+private func stringValue(_ v: JSONValue) -> String? {
+    if case let .string(s) = v { return s }
+    return nil
+}
+
+private func intValue(_ v: JSONValue) -> Int? {
+    switch v {
+    case .int(let i): return i
+    case .double(let d): return Int(d)
+    default: return nil
+    }
+}
+
+private func doubleValue(_ v: JSONValue) -> Double? {
+    switch v {
+    case .double(let d): return d
+    case .int(let i): return Double(i)
+    default: return nil
+    }
+}
+
+private func requireXY(_ params: JSONValue?) throws -> (Double, Double) {
+    guard let p = paramsObject(params) else {
+        throw RpcDispatchError.applicationError(code: -32602, message: "object params required")
+    }
+    guard let x = p["x"].flatMap({ doubleValue($0) }),
+          let y = p["y"].flatMap({ doubleValue($0) }) else {
+        throw RpcDispatchError.applicationError(code: -32602, message: "missing x/y")
+    }
+    return (x, y)
+}
 
 // MARK: - Framing helpers
 
@@ -179,6 +304,9 @@ func handleLine(_ line: String) -> Data {
     do {
         let result = try handler(req.params)
         return encodeResponse(id: req.id, result: result, error: nil)
+    } catch RpcDispatchError.applicationError(let code, let message) {
+        return encodeResponse(id: req.id, result: nil,
+                              error: RpcError(code: code, message: message))
     } catch {
         return encodeResponse(id: req.id, result: nil,
                               error: RpcError(code: -32603, message: "Internal error: \(error.localizedDescription)"))
