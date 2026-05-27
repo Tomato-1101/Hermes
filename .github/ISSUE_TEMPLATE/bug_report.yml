@@ -1,0 +1,61 @@
+name: Bug report (Phase 0 / build failure)
+description: The app fails to install, build, or run on your machine.
+labels: ["type:bug", "phase:0"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Hermes is in pre-alpha. The most useful reports right now are
+        **environment-specific build/install failures** during Phase 0
+        bring-up. For design feedback please open a discussion instead.
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "e.g. 14.4.1 (Sonoma)"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      placeholder: "MacBook Pro M3, 18 GB RAM"
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node version (`node -v`)
+    validations:
+      required: true
+  - type: input
+    id: pnpm-version
+    attributes:
+      label: pnpm version (`pnpm -v`)
+    validations:
+      required: true
+  - type: input
+    id: xcode-clt
+    attributes:
+      label: Xcode Command Line Tools (`xcode-select -p`)
+      placeholder: "/Library/Developer/CommandLineTools"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. git clone ...
+        2. pnpm install
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Full error log
+      description: Paste everything — long logs are fine.
+      render: shell
+    validations:
+      required: true

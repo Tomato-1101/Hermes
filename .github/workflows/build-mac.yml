@@ -1,0 +1,45 @@
+name: build-mac (verify only)
+
+# Hermes is distributed as source; this workflow only verifies that a clean
+# checkout produces a runnable .app. It does NOT upload any artefact and it
+# does NOT sign or notarize. Triggered manually so we don't burn macOS
+# minutes on every push.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Swift sidecar
+        run: pnpm sidecar:mac:build
+
+      - name: Build IR
+        run: pnpm --filter @hermes/ir exec tsc -b
+
+      - name: Build app (.app, unsigned)
+        run: pnpm build:mac
+        env:
+          # electron-builder reads these; ensure no signing is attempted.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Verify the .app exists
+        run: |
+          test -d apps/hermes/dist/mac-arm64/Hermes.app && echo "OK"

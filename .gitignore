@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+release/
+*.tsbuildinfo
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+tests/**/screenshots/
+tests/**/videos/
+
+# Editor / OS
+.DS_Store
+.vscode/launch.json
+*.swp
+*.swo
+*.local
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Bundler caches
+.vite/
+.turbo/
+
+# Electron
+apps/hermes/out/
+apps/hermes/dist/
+
+# Swift sidecar
+sidecars/macos-native/.build/
+sidecars/macos-native/.swiftpm/
+
+# Python sidecar
+sidecars/python-vision/.venv/
+sidecars/python-vision/__pycache__/
+sidecars/python-vision/*.egg-info/
+sidecars/python-vision/dist/
+sidecars/python-vision/build/
+
+# Hermes runtime data
+flows/
+.hermes/

@@ -1,0 +1,41 @@
+{
+  "name": "@hermes/app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Hermes Electron app — Main + Preload + Renderer.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "build:mac": "pnpm build && electron-builder --mac --config electron-builder.yml",
+    "preview": "electron-vite preview",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --passWithNoTests",
+    "test:run": "vitest run --passWithNoTests",
+    "clean": "rm -rf out dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@hermes/ai": "workspace:*",
+    "@hermes/desktop-adapter": "workspace:*",
+    "@hermes/engine": "workspace:*",
+    "@hermes/ir": "workspace:*",
+    "@hermes/storage": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.24.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.0",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

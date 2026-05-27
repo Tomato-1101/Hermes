@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+out/
+release/
+*.lock
+pnpm-lock.yaml
+.vite/
+*.min.*
+sidecars/macos-native/.build/

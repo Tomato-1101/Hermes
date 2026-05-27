@@ -1,0 +1,176 @@
+:root {
+  --bg: #0f1115;
+  --bg-elev: #161a22;
+  --bg-pane: #11151c;
+  --border: #232a36;
+  --fg: #e6e9ef;
+  --fg-muted: #8b95a7;
+  --accent: #8db9ff;
+  --ok: #6ee7b7;
+  --warn: #fbbf24;
+  --err: #f87171;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    'Hiragino Kaku Gothic ProN',
+    'Yu Gothic',
+    system-ui,
+    sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  appearance: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  height: 100vh;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-pane);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.pane:last-child {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.pane-center {
+  background: var(--bg);
+}
+
+.pane-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pane-header small {
+  font-weight: 400;
+}
+
+.pane-body {
+  padding: 14px;
+  overflow: auto;
+  flex: 1;
+}
+
+.muted {
+  color: var(--fg-muted);
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.card h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.kv {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.kv li {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.kv li:last-child {
+  border-bottom: none;
+}
+
+.kv-key {
+  color: var(--fg-muted);
+}
+
+.kv-value {
+  font-family:
+    ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.permissions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.permissions li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.permissions .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--err);
+}
+
+.permissions li.ok .dot {
+  background: var(--ok);
+}
+
+.permissions li button {
+  margin-left: auto;
+}

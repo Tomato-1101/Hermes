@@ -1,0 +1,28 @@
+{
+  "name": "@hermes/ai",
+  "version": "0.0.1",
+  "private": true,
+  "description": "OpenRouter client, Step Library JSON Schema (Mode 3 tool definitions), and AllowList enforcement.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./openrouter": "./src/openrouter-client.ts",
+    "./step-library": "./src/step-library.ts",
+    "./allow-list": "./src/allow-list.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@hermes/ir": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

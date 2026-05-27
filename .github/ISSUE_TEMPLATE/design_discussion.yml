@@ -1,0 +1,32 @@
+name: Design discussion
+description: Question or critique about the plan / IR / Step Library / architecture.
+labels: ["type:design", "phase:planning"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For design feedback please open a Discussion rather than an issue
+        if you can. If you're not sure whether something is a bug or a
+        design question, use this template.
+  - type: textarea
+    id: topic
+    attributes:
+      label: Topic
+      placeholder: "Which part of the plan / code is this about?"
+    validations:
+      required: true
+  - type: textarea
+    id: argument
+    attributes:
+      label: Your position
+      placeholder: |
+        - What do you think should be different, and why?
+        - What problem does the current design fail to address?
+        - What's the smallest change that could fix it?
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References (optional)
+      placeholder: Links to relevant tools / papers / prior art.

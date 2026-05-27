@@ -1,0 +1,36 @@
+{
+  "name": "@hermes/ir",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Hermes Flow IR: types, JSON Schema, validation, migrations, JSON Patch utilities, and expression language.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema.ts",
+    "./json-schema": "./src/json-schema.ts",
+    "./validate": "./src/validate.ts",
+    "./id": "./src/id.ts",
+    "./patch": "./src/patch.ts",
+    "./migrations": "./src/migrations.ts",
+    "./expr": "./src/expr.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "ajv": "^8.17.0",
+    "ajv-formats": "^3.0.0",
+    "fast-json-patch": "^3.1.1",
+    "jsep": "^1.4.0",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

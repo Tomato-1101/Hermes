@@ -1,0 +1,31 @@
+{
+  "name": "@hermes/storage",
+  "version": "0.0.1",
+  "private": true,
+  "description": "SQLite meta store, flow filesystem layout, and OS-keychain backed Vault for API keys & secrets.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sqlite": "./src/sqlite.ts",
+    "./flow-store": "./src/flow-store.ts",
+    "./vault": "./src/vault.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@hermes/ir": "workspace:*",
+    "better-sqlite3": "^11.7.0",
+    "keytar": "^7.9.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

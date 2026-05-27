@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Design discussion (preferred)
+    url: https://github.com/tomato/hermes/discussions
+    about: Open-ended design questions belong here, not in the issue tracker.

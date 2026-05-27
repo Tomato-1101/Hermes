@@ -1,0 +1,45 @@
+appId: dev.hermes.app
+productName: Hermes
+copyright: ""
+
+# Source distribution policy: we do NOT sign or notarize binaries.
+# Users build locally via `pnpm install && pnpm --filter @hermes/app build:mac`.
+
+directories:
+  buildResources: build
+  output: dist
+
+# Everything the app needs is bundled into out/** by electron-vite. We do
+# NOT ship node_modules — pnpm symlinks confuse electron-builder. Native
+# modules (better-sqlite3, keytar) are not wired in until phase 1; when
+# they are, we'll switch to `npmRebuild: false` + `extraResources`.
+files:
+  - out/**/*
+  - package.json
+  - "!**/*.map"
+
+asar: true
+
+extraResources:
+  - from: ../../sidecars/macos-native/.build/release/hermes-native
+    to: sidecars/hermes-native
+    filter: ["**/*"]
+
+# We pre-bundle every dependency. Don't try to (re)install them.
+npmRebuild: false
+buildDependenciesFromSource: false
+nodeGypRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dir
+      arch:
+        - arm64
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  minimumSystemVersion: "13.0"
+
+# Skip codesigning and notarization explicitly.
+afterSign: null

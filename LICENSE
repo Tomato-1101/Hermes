@@ -1,0 +1,22 @@
+License — TBD (To Be Determined)
+================================
+
+Hermes is in pre-alpha. The source is published in this repository so the
+design and implementation can be inspected. Until a final license is chosen
+and applied, the following applies:
+
+1. You MAY read the source code.
+2. You MAY clone the repository for personal evaluation and build the
+   application locally for your own use.
+3. You MAY NOT redistribute the source or any derivative work, in original
+   or modified form, in source or binary form.
+4. You MAY NOT use the name "Hermes" (when used to refer to this project)
+   for any forked or derivative project.
+5. Code contributed to this repository via pull request is assumed to be
+   offered under whatever permissive license the project eventually adopts.
+
+A definitive license — most likely Apache 2.0 or MIT — will replace this
+file before the first tagged release. Until then, please contact the
+maintainer if you need clarity on what you may or may not do.
+
+Maintainer: tomato (zhaounhaku@gmail.com)
