@@ -4,3 +4,9 @@ export { validateFlow, assertValidFlow, type ValidationResult } from './validate
 export { newId } from './id.js';
 export { diffFlow, applyFlowPatch, type FlowPatch } from './patch.js';
 export { migrateFlow, type Migration } from './migrations.js';
+export {
+  interpolate,
+  interpolateParams,
+  collectSecretRefs,
+  type InterpolateContext,
+} from './interpolate.js';

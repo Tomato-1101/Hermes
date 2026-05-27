@@ -1,5 +1,6 @@
 import mitt, { type Emitter } from 'mitt';
 import type { Flow, Step } from '@hermes/ir';
+import { interpolateParams, type InterpolateContext } from '@hermes/ir';
 import { HandlerRegistry } from './registry.js';
 import { nextDelayMs, shouldRetry, sleep } from './retry.js';
 import {
@@ -12,16 +13,31 @@ import {
   type StepStatus,
 } from './types.js';
 
+/**
+ * Per-run map of secret names → resolved plaintext values. Populated by
+ * the caller (apps/hermes) before run() — the engine itself never
+ * touches the Vault, it just substitutes pre-fetched values into
+ * `${secrets.<name>}` placeholders at dispatch time.
+ */
+export type SecretsMap = Record<string, string | undefined>;
+
 type EmitterEvents = { event: RunEvent };
 
 export class StepExecutor {
   private readonly registry: HandlerRegistry;
   private readonly providers: ProviderBag;
   private readonly emitter: Emitter<EmitterEvents>;
+  private readonly secrets: SecretsMap;
 
-  constructor(opts: { registry: HandlerRegistry; providers?: ProviderBag }) {
+  constructor(opts: {
+    registry: HandlerRegistry;
+    providers?: ProviderBag;
+    /** Pre-resolved secret values for `${secrets.<name>}` substitution. */
+    secrets?: SecretsMap;
+  }) {
     this.registry = opts.registry;
     this.providers = opts.providers ?? {};
+    this.secrets = opts.secrets ?? {};
     this.emitter = mitt<EmitterEvents>();
   }
 
@@ -142,7 +158,8 @@ export class StepExecutor {
           const layerSuffix = step.target?.layer ? ` (layer="${step.target.layer}")` : '';
           throw new Error(`No handler registered for step type "${step.type}"${layerSuffix}`);
         }
-        const promise = handler.execute(step, ctx);
+        const resolved = this.resolveStep(step, ctx);
+        const promise = handler.execute(resolved, ctx);
         return await withTimeout(promise, step.timeoutMs ?? ctx.flow.defaults.timeoutMs, ctx.signal);
       }
     }
@@ -215,6 +232,23 @@ export class StepExecutor {
 
   private assertNotAborted(ctx: RunContext): void {
     if (ctx.signal.aborted) throw new HermesAbortError();
+  }
+
+  /**
+   * Return a copy of `step` with all `${var.*}` / `${secrets.*}` /
+   * `${env.*}` / `${ctx.*}` placeholders in `params` replaced. The
+   * original step in the Flow is left untouched so we never persist a
+   * resolved secret back to disk.
+   */
+  private resolveStep(step: Step, ctx: RunContext): Step {
+    if (!step.params) return step;
+    const interpCtx: InterpolateContext = {
+      var: ctx.vars,
+      env: process.env,
+      secrets: this.secrets,
+      ctx: ctx.outputs,
+    };
+    return { ...step, params: interpolateParams(step.params, interpCtx) };
   }
 }
 

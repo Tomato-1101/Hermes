@@ -188,6 +188,34 @@ describe('StepExecutor', () => {
     expect(count).toBe(5);
   });
 
+  it('resolves ${var.x} and ${secrets.x} placeholders in step params', async () => {
+    const registry = new HandlerRegistry();
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    registry.register({
+      type: 'type',
+      execute: async (step) => {
+        seen.push(step.params);
+        return { outcome: 'completed' };
+      },
+    });
+    const exec = new StepExecutor({
+      registry,
+      secrets: { token: 's3cret' },
+    });
+    await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'type',
+          enabled: true,
+          params: { text: '${var.greeting} ${secrets.token}' },
+        },
+      ]),
+      { inputs: { greeting: 'hi' } },
+    );
+    expect(seen[0]).toEqual({ text: 'hi s3cret' });
+  });
+
   it('runs the catch branch on try failure', async () => {
     const registry = new HandlerRegistry();
     registry.register({

@@ -22,6 +22,8 @@ import {
 } from '@hermes/web-provider';
 import { WebRecorder } from '@hermes/recorder-web';
 import { FlowStore } from '@hermes/storage/flow-store';
+import { Vault } from '@hermes/storage';
+import { collectSecretRefs } from '@hermes/ir';
 import { MacosDesktopAdapter } from '@hermes/desktop-adapter/macos';
 import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
 import { registerDesktopHandlers } from '@hermes/desktop-adapter/handlers';
@@ -34,6 +36,7 @@ type EmitFn = (event: EventPushPayload) => void;
 
 export class RunController {
   private readonly store: FlowStore;
+  private readonly vault: Vault;
   private provider: WebProvider | null = null;
   private desktop: DesktopProvider | null = null;
   private recorder: WebRecorder | null = null;
@@ -43,6 +46,7 @@ export class RunController {
 
   constructor() {
     this.store = new FlowStore(flowsRoot());
+    this.vault = new Vault();
   }
 
   attachWindow(window: BrowserWindow): void {
@@ -134,6 +138,22 @@ export class RunController {
       this.recorder = new WebRecorder();
       await this.recorder.attach(this.provider);
       this.recorder.on('step', (e) => {
+        // For password-style inputs, persist the plaintext into the Vault
+        // under the name the recorder picked (e.g. "password" or the
+        // input's label). The IR step's params.text already carries the
+        // `${secrets.<name>}` reference, so we just need the vault entry.
+        if (e.raw.kind === 'input' && e.raw.isSecret && e.raw.value) {
+          const secretName = extractSecretName(e.step);
+          if (secretName) {
+            void this.vault.set(secretName, e.raw.value).catch((err) => {
+              this.emit({
+                type: 'log',
+                level: 'warn',
+                message: `failed to write secret "${secretName}" to vault: ${(err as Error).message}`,
+              });
+            });
+          }
+        }
         // Append in-memory; the renderer is responsible for committing the
         // edited list back via flowSave.
         this.emit({ type: 'recorder:step', step: e.step });
@@ -195,6 +215,15 @@ export class RunController {
     registerWebHandlers(registry);
     if (this.desktop) registerDesktopHandlers(registry);
 
+    // Pre-fetch every secret the flow references so the engine can
+    // interpolate without itself touching keytar. Unknown secrets resolve
+    // to empty string — the step still runs, just types nothing.
+    const secrets: Record<string, string> = {};
+    for (const name of collectSecretRefsInFlow(flow)) {
+      const value = await this.vault.get(name).catch(() => null);
+      if (value !== null) secrets[name] = value;
+    }
+
     const abort = new AbortController();
     const runId = newId();
     this.activeRun = { runId, abort };
@@ -206,6 +235,7 @@ export class RunController {
     const executor = new StepExecutor({
       registry,
       providers,
+      secrets,
     });
     executor.on((e) => {
       switch (e.type) {
@@ -300,6 +330,33 @@ export class RunController {
     }
     this.currentRecordingFlowId = null;
   }
+}
+
+/**
+ * Walk an entire Flow (steps, children, branches) and return every
+ * `${secrets.<name>}` placeholder referenced anywhere in params.
+ */
+function collectSecretRefsInFlow(flow: Flow): string[] {
+  const names = new Set<string>();
+  const visit = (s: Step): void => {
+    for (const n of collectSecretRefs(s.params)) names.add(n);
+    if (s.children) s.children.forEach(visit);
+    if (s.branches) s.branches.forEach((b) => b.steps.forEach(visit));
+  };
+  flow.steps.forEach(visit);
+  return [...names];
+}
+
+/**
+ * Extract the secret name from a recorder-emitted step whose params.text
+ * is the `${secrets.<name>}` placeholder. Returns null if the step is
+ * not in that shape.
+ */
+function extractSecretName(step: Step): string | null {
+  const t = step.params?.['text'];
+  if (typeof t !== 'string') return null;
+  const m = t.match(/^\$\{secrets\.([^}]+)\}$/);
+  return m && m[1] ? m[1] : null;
 }
 
 function stepHitsLayer(layer: 'web' | 'desktop'): (s: Step) => boolean {

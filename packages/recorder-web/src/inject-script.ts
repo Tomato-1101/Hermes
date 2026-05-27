@@ -165,6 +165,9 @@ export const INJECT_SCRIPT = String.raw`
 
   // 'change' captures the final value for form inputs; that's the unit
   // the engine replays via 'type' step (we don't replay keystroke-by-key).
+  // For secret inputs we still send the value so the orchestrator can
+  // hand it to the Vault — but we flag it so it's never persisted in the
+  // IR or shown in the recorder log.
   document.addEventListener('change', (e) => {
     const t = e.target;
     if (!t || (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA' && t.tagName !== 'SELECT')) return;
@@ -173,7 +176,7 @@ export const INJECT_SCRIPT = String.raw`
       kind: 'input',
       url: location.href,
       element: snapshot(t),
-      value: isSecret ? null : String(t.value ?? ''),
+      value: String(t.value ?? ''),
       isSecret,
       ts: Date.now(),
     });
