@@ -1,0 +1,30 @@
+{
+  "name": "@hermes/recorder-web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Web recorder: hooks into a WebProvider's BrowserContext, captures user interactions, emits IR Steps with candidate selector arrays.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./script": "./src/inject-script.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@hermes/ir": "workspace:*",
+    "@hermes/web-provider": "workspace:*",
+    "mitt": "^3.0.1",
+    "playwright-core": "^1.49.0",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

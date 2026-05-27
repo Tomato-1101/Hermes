@@ -14,12 +14,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IpcChannels, IpcContract, type PermissionName } from '../shared/ipc.js';
 import { disposeSidecar, pingSidecar } from './sidecar.js';
+import { RunController } from './run-controller.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
 const isMac = process.platform === 'darwin';
 
 let mainWindow: BrowserWindow | null = null;
+const controller = new RunController();
 
 function createMainWindow(): void {
   mainWindow = new BrowserWindow({
@@ -48,6 +50,8 @@ function createMainWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  controller.attachWindow(mainWindow);
 }
 
 function registerIpcHandlers(): void {
@@ -96,6 +100,51 @@ function registerIpcHandlers(): void {
     await shell.openExternal(url);
     return { opened: true };
   });
+
+  ipcMain.handle(IpcChannels.flowList, async () => {
+    const flows = await controller.listFlows();
+    return { flows };
+  });
+
+  ipcMain.handle(IpcChannels.flowCreate, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowCreate].args.parse(raw);
+    const flow = await controller.createFlow(args.name);
+    return { flow };
+  });
+
+  ipcMain.handle(IpcChannels.flowOpen, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowOpen].args.parse(raw);
+    const flow = await controller.openFlow(args.id);
+    return { flow };
+  });
+
+  ipcMain.handle(IpcChannels.flowSave, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowSave].args.parse(raw);
+    await controller.saveFlow(args.flow as Parameters<typeof controller.saveFlow>[0]);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.recorderStart, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.recorderStart].args.parse(raw);
+    await controller.startRecording(args.flowId, args.startUrl);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.recorderStop, async () => {
+    await controller.stopRecording();
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.runStart, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.runStart].args.parse(raw);
+    const runId = await controller.startRun(args.flowId, args.inputs);
+    return { runId };
+  });
+
+  ipcMain.handle(IpcChannels.runStop, async () => {
+    await controller.stopRun();
+    return { ok: true as const };
+  });
 }
 
 function checkMacPermission(name: PermissionName): boolean {
@@ -140,6 +189,7 @@ app.on('window-all-closed', () => {
   if (!isMac) app.quit();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   disposeSidecar();
+  await controller.dispose().catch(() => undefined);
 });

@@ -14,6 +14,10 @@ const mainExternals = [
   // resolved at runtime from process.resourcesPath when packaged.
   'better-sqlite3',
   'keytar',
+  // Playwright pulls in its own browser binary lookup logic that can't be
+  // bundled cleanly with esbuild. Keep it external; the packaged app must
+  // ship its node_modules.
+  'playwright-core',
 ];
 
 export default defineConfig({
