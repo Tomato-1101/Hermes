@@ -53,6 +53,12 @@ importers:
       '@hermes/web-provider':
         specifier: workspace:*
         version: link:../../packages/web-provider
+      better-sqlite3:
+        specifier: ^11.7.0
+        version: 11.10.0
+      keytar:
+        specifier: ^7.9.0
+        version: 7.9.0
       playwright-core:
         specifier: ^1.49.0
         version: 1.60.0

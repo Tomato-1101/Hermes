@@ -24,6 +24,8 @@
     "@hermes/recorder-web": "workspace:*",
     "@hermes/storage": "workspace:*",
     "@hermes/web-provider": "workspace:*",
+    "better-sqlite3": "^11.7.0",
+    "keytar": "^7.9.0",
     "playwright-core": "^1.49.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
