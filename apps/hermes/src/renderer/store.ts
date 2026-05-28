@@ -260,40 +260,73 @@ export const useStore = create<State>((set, get) => {
     redoStack: [],
 
     async loadFlows() {
-      const { flows } = (await window.hermes.flowList()) as { flows: FlowSummary[] };
-      set({ flows });
+      try {
+        const { flows } = (await window.hermes.flowList()) as { flows: FlowSummary[] };
+        set({ flows });
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `フロー一覧の取得に失敗: ${(e as Error).message}`,
+        });
+      }
     },
 
     async createFlow(name: string) {
-      const { flow } = (await window.hermes.flowCreate(name)) as { flow: Flow };
-      set({
-        currentFlow: flow,
-        selectedStepId: null,
-        dirty: false,
-        undoStack: [],
-        redoStack: [],
-      });
-      await get().loadFlows();
-      return flow;
+      try {
+        const { flow } = (await window.hermes.flowCreate(name)) as { flow: Flow };
+        set({
+          currentFlow: flow,
+          selectedStepId: null,
+          dirty: false,
+          undoStack: [],
+          redoStack: [],
+        });
+        await get().loadFlows();
+        return flow;
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `フロー作成に失敗: ${(e as Error).message}`,
+        });
+        throw e;
+      }
     },
 
     async openFlow(id: string) {
-      const { flow } = (await window.hermes.flowOpen(id)) as { flow: Flow };
-      set({
-        currentFlow: flow,
-        selectedStepId: null,
-        dirty: false,
-        undoStack: [],
-        redoStack: [],
-      });
+      try {
+        const { flow } = (await window.hermes.flowOpen(id)) as { flow: Flow };
+        set({
+          currentFlow: flow,
+          selectedStepId: null,
+          dirty: false,
+          undoStack: [],
+          redoStack: [],
+        });
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `フローを開けませんでした: ${(e as Error).message}`,
+        });
+      }
     },
 
     async saveFlow() {
       const flow = get().currentFlow;
       if (!flow) return;
-      await window.hermes.flowSave(flow);
-      set({ dirty: false });
-      await get().loadFlows();
+      try {
+        await window.hermes.flowSave(flow);
+        set({ dirty: false });
+        await get().loadFlows();
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `保存に失敗: ${(e as Error).message}`,
+        });
+      }
     },
 
     selectStep(id: string | null) {

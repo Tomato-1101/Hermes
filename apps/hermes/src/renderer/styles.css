@@ -229,6 +229,45 @@ hr {
   gap: 8px;
 }
 
+/* Vault panel in Inspector */
+.vault-panel .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.vault-panel .section-header h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vault-panel button.small { font-size: 11px; padding: 2px 8px; }
+.vault-list { list-style: none; padding: 0; margin: 4px 0 8px; }
+.vault-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  background: var(--bg);
+}
+.vault-list li button {
+  padding: 0 6px;
+  font-size: 10px;
+}
+.vault-panel code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
 /* Inspector */
 .step-editor h3, .step-editor h4, .diag h3 {
   margin: 0 0 8px;

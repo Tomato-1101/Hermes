@@ -34,6 +34,13 @@ const api = {
     ipcRenderer.invoke(IpcChannels.runStart, { flowId, inputs }),
   runStop: () => ipcRenderer.invoke(IpcChannels.runStop),
 
+  // Vault
+  vaultList: () => ipcRenderer.invoke(IpcChannels.vaultList),
+  vaultSet: (account: string, value: string) =>
+    ipcRenderer.invoke(IpcChannels.vaultSet, { account, value }),
+  vaultDelete: (account: string) =>
+    ipcRenderer.invoke(IpcChannels.vaultDelete, { account }),
+
   // Event subscription
   onEvent: (handler: (event: unknown) => void) => {
     const wrapped = (_e: IpcRendererEvent, payload: unknown) => handler(payload);

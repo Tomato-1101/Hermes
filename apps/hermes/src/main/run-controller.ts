@@ -6,7 +6,6 @@
  * app process (singleton).
  */
 import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -135,8 +134,13 @@ export class RunController {
     if (!this.provider) throw new Error('failed to start web provider');
 
     if (!this.recorder) {
-      this.recorder = new WebRecorder();
-      await this.recorder.attach(this.provider);
+      // Build the recorder locally first and only assign to this.recorder
+      // after attach() succeeds — otherwise a failed attach would leave
+      // this.recorder set to a half-attached instance and the next
+      // startRecording() call would skip re-initialization.
+      const recorder = new WebRecorder();
+      await recorder.attach(this.provider);
+      this.recorder = recorder;
       this.recorder.on('step', (e) => {
         // For password-style inputs, persist the plaintext into the Vault
         // under the name the recorder picked (e.g. "password" or the
@@ -165,13 +169,14 @@ export class RunController {
     this.emit({ type: 'recorder:state', running: true });
 
     if (startUrl) {
+      const normalized = normalizeStartUrl(startUrl);
       // Emit a navigation step so the IR starts with an open_url.
       const navStep: Step = {
         id: newId(),
         type: 'open_url',
         enabled: true,
-        label: shortenUrl(startUrl),
-        params: { url: startUrl, waitUntil: 'load' },
+        label: shortenUrl(normalized),
+        params: { url: normalized, waitUntil: 'load' },
         meta: {
           recordedAt: new Date().toISOString(),
           recordedBy: 'web-recorder',
@@ -179,7 +184,7 @@ export class RunController {
         },
       };
       this.emit({ type: 'recorder:step', step: navStep });
-      await this.provider.openUrl(startUrl);
+      await this.provider.openUrl(normalized);
     }
 
     // touch the flow to bump updatedAt
@@ -285,6 +290,20 @@ export class RunController {
     this.activeRun = null;
   }
 
+  // ---- Vault passthrough ----
+
+  vaultList(): Promise<Array<{ account: string }>> {
+    return this.vault.list();
+  }
+
+  vaultSet(account: string, value: string): Promise<void> {
+    return this.vault.set(account, value);
+  }
+
+  vaultDelete(account: string): Promise<boolean> {
+    return this.vault.delete(account);
+  }
+
   // ---- Provider lifecycle ----
 
   private async ensureProviderFor(flowId: string): Promise<void> {
@@ -379,6 +398,23 @@ function shortenUrl(url: string): string {
   }
 }
 
+/**
+ * Accept `example.com`, `https://example.com`, `http://127.0.0.1:8080`,
+ * or `localhost:5173` and return something Playwright can navigate to.
+ * Throws if the input is so malformed that no URL can be derived.
+ */
+function normalizeStartUrl(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) throw new Error('empty start URL');
+  const hasScheme = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed);
+  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+  try {
+    return new URL(candidate).toString();
+  } catch {
+    throw new Error(`invalid URL: ${input}`);
+  }
+}
+
 /** Diagnostic helper for the flow listing UI. */
 export async function flowsExistOnDisk(): Promise<boolean> {
   try {
@@ -390,6 +426,3 @@ export async function flowsExistOnDisk(): Promise<boolean> {
     return false;
   }
 }
-
-// guard against unused import warnings when flowsExistOnDisk is unused
-void join;
