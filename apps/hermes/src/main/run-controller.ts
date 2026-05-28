@@ -28,6 +28,7 @@ import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
 import { registerDesktopHandlers } from '@hermes/desktop-adapter/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
 import { getSidecarClient } from './sidecar.js';
+import { DesktopRecorder } from './desktop-recorder.js';
 import type { EventPushPayload } from '../shared/ipc.js';
 import { IpcChannels } from '../shared/ipc.js';
 
@@ -39,7 +40,9 @@ export class RunController {
   private provider: WebProvider | null = null;
   private desktop: DesktopProvider | null = null;
   private recorder: WebRecorder | null = null;
+  private desktopRecorder: DesktopRecorder | null = null;
   private currentRecordingFlowId: string | null = null;
+  private currentRecordingLayer: 'web' | 'desktop' = 'web';
   private activeRun: { runId: string; abort: AbortController } | null = null;
   private window: BrowserWindow | null = null;
 
@@ -123,13 +126,40 @@ export class RunController {
 
   // ---- Recorder lifecycle ----
 
-  async startRecording(flowId: string, startUrl?: string): Promise<void> {
+  async startRecording(
+    flowId: string,
+    startUrl?: string,
+    layer: 'web' | 'desktop' = 'web',
+  ): Promise<void> {
     if (this.currentRecordingFlowId) {
       throw new Error(`Recording already active for flow ${this.currentRecordingFlowId}`);
     }
 
     const flow = await this.store.readFlow(flowId);
+    this.currentRecordingLayer = layer;
 
+    if (layer === 'desktop') {
+      await this.startDesktopRecording(flowId);
+    } else {
+      await this.startWebRecording(flowId, startUrl);
+    }
+
+    this.currentRecordingFlowId = flowId;
+    this.emit({ type: 'recorder:state', running: true });
+
+    // Bump updatedAt so the sidebar shows fresh activity even before any
+    // steps land.
+    flow.updatedAt = new Date().toISOString();
+    if (layer === 'desktop' && !flow.metadata.targets.includes('desktop')) {
+      flow.metadata = {
+        ...flow.metadata,
+        targets: [...flow.metadata.targets, 'desktop'],
+      };
+    }
+    await this.store.writeFlow(flow);
+  }
+
+  private async startWebRecording(flowId: string, startUrl?: string): Promise<void> {
     await this.ensureProviderFor(flowId);
     if (!this.provider) throw new Error('failed to start web provider');
 
@@ -165,8 +195,6 @@ export class RunController {
     }
 
     this.recorder.start();
-    this.currentRecordingFlowId = flowId;
-    this.emit({ type: 'recorder:state', running: true });
 
     if (startUrl) {
       const normalized = normalizeStartUrl(startUrl);
@@ -186,13 +214,38 @@ export class RunController {
       this.emit({ type: 'recorder:step', step: navStep });
       await this.provider.openUrl(normalized);
     }
+  }
 
-    // touch the flow to bump updatedAt
-    flow.updatedAt = new Date().toISOString();
-    await this.store.writeFlow(flow);
+  private async startDesktopRecording(_flowId: string): Promise<void> {
+    if (process.platform !== 'darwin') {
+      throw new Error('Desktop recording is currently only supported on macOS');
+    }
+    // Reuse a single DesktopRecorder across sessions; it's stateful but
+    // idempotent across start/stop.
+    if (!this.desktopRecorder) {
+      const recorder = new DesktopRecorder();
+      this.desktopRecorder = recorder;
+      recorder.on('step', (e) => {
+        this.emit({ type: 'recorder:step', step: e.step });
+      });
+      recorder.on('error', (e) => {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: `desktop recorder: ${e.message}`,
+        });
+      });
+    }
+    await this.desktopRecorder.start();
   }
 
   async stopRecording(): Promise<void> {
+    if (this.currentRecordingLayer === 'desktop') {
+      if (this.desktopRecorder) await this.desktopRecorder.stop();
+      this.currentRecordingFlowId = null;
+      this.emit({ type: 'recorder:state', running: false });
+      return;
+    }
     if (!this.recorder) return;
     this.recorder.stop();
     this.currentRecordingFlowId = null;
@@ -341,6 +394,10 @@ export class RunController {
     await this.stopRun();
     await this.recorder?.detach();
     this.recorder = null;
+    if (this.desktopRecorder) {
+      await this.desktopRecorder.stop().catch(() => undefined);
+      this.desktopRecorder = null;
+    }
     await this.provider?.close();
     this.provider = null;
     if (this.desktop) {

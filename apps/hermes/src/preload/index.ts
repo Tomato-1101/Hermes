@@ -25,8 +25,8 @@ const api = {
   flowSave: (flow: unknown) => ipcRenderer.invoke(IpcChannels.flowSave, { flow }),
 
   // Recorder
-  recorderStart: (flowId: string, startUrl?: string) =>
-    ipcRenderer.invoke(IpcChannels.recorderStart, { flowId, startUrl }),
+  recorderStart: (flowId: string, startUrl?: string, layer?: 'web' | 'desktop') =>
+    ipcRenderer.invoke(IpcChannels.recorderStart, { flowId, startUrl, layer }),
   recorderStop: () => ipcRenderer.invoke(IpcChannels.recorderStop),
 
   // Runner

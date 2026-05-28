@@ -244,11 +244,9 @@ function Editor() {
     );
   }
 
-  const onRecord = async (): Promise<void> => {
+  const onRecordWeb = async (): Promise<void> => {
     if (recording) {
       await window.hermes.recorderStop();
-      // Persist the just-recorded steps so the next 再生 sees them.
-      // The store guards against the no-flow case.
       try { await saveFlow(); } catch { /* logged via store */ }
       return;
     }
@@ -258,9 +256,28 @@ function Editor() {
     });
     if (url === null) return; // user cancelled
     try {
-      await window.hermes.recorderStart(flow.id, url || undefined);
+      await window.hermes.recorderStart(flow.id, url || undefined, 'web');
     } catch (e) {
-      appendLog({ ts: Date.now(), level: 'error', message: `録画開始に失敗: ${(e as Error).message}` });
+      appendLog({ ts: Date.now(), level: 'error', message: `Web 録画開始に失敗: ${(e as Error).message}` });
+    }
+  };
+
+  const onRecordDesktop = async (): Promise<void> => {
+    if (recording) {
+      await window.hermes.recorderStop();
+      try { await saveFlow(); } catch { /* logged via store */ }
+      return;
+    }
+    try {
+      await window.hermes.recorderStart(flow.id, undefined, 'desktop');
+      appendLog({
+        ts: Date.now(),
+        level: 'info',
+        message:
+          'Desktop 録画開始。クリック・修飾キーがグローバルに記録されます。停止するまで他のアプリで操作してください。',
+      });
+    } catch (e) {
+      appendLog({ ts: Date.now(), level: 'error', message: `Desktop 録画開始に失敗: ${(e as Error).message}` });
     }
   };
 
@@ -285,14 +302,35 @@ function Editor() {
       <header className="pane-header">
         <span>{flow.name}</span>
         <div className="toolbar">
-          <button
-            type="button"
-            className={recording ? 'danger' : ''}
-            onClick={onRecord}
-            disabled={running}
-          >
-            {recording ? '■ 録画停止' : '● 録画'}
-          </button>
+          {recording ? (
+            <button
+              type="button"
+              className="danger"
+              onClick={onRecordWeb}
+              disabled={running}
+            >
+              ■ 録画停止
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onRecordWeb}
+                disabled={running}
+                title="ブラウザで操作を録画"
+              >
+                ● Web 録画
+              </button>
+              <button
+                type="button"
+                onClick={onRecordDesktop}
+                disabled={running}
+                title="アプリ（macOS）の操作を録画"
+              >
+                ● App 録画
+              </button>
+            </>
+          )}
           <button
             type="button"
             className={running ? 'danger' : 'primary'}

@@ -126,7 +126,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IpcChannels.recorderStart, async (_event, raw) => {
     const args = IpcContract[IpcChannels.recorderStart].args.parse(raw);
-    await controller.startRecording(args.flowId, args.startUrl);
+    await controller.startRecording(args.flowId, args.startUrl, args.layer);
     return { ok: true as const };
   });
 

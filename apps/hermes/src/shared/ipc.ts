@@ -120,9 +120,12 @@ export const FlowSaveResult = z.object({ ok: z.literal(true) });
 // startUrl is validated leniently here so the renderer doesn't have to ship a
 // URL parser to its prompt; the controller does the actual normalization
 // (prepending https:// if missing) before handing it to Playwright.
+// `layer` chooses between the Playwright-based web recorder and the
+// CGEventTap-based desktop recorder; defaults to 'web'.
 export const RecorderStartArgs = z.object({
   flowId: z.string(),
   startUrl: z.string().min(1).optional(),
+  layer: z.enum(['web', 'desktop']).optional(),
 });
 export const RecorderStartResult = z.object({ ok: z.literal(true) });
 

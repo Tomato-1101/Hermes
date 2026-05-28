@@ -213,6 +213,46 @@ let handlers: [String: Handler] = [
             throw RpcDispatchError.applicationError(code: -32603, message: "combo failed: \(error)")
         }
     },
+
+    "recording.start": { _ in
+        do {
+            try Recorder.shared.start()
+            return .object(["ok": .bool(true)])
+        } catch RecordingError.alreadyRecording {
+            throw RpcDispatchError.applicationError(code: -32010, message: "Recording already active")
+        } catch RecordingError.permissionDenied {
+            throw RpcDispatchError.applicationError(
+                code: -32001,
+                message: "Accessibility permission not granted — required for CGEventTap"
+            )
+        } catch RecordingError.tapCreateFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32011,
+                message: "CGEventTap creation failed (Input Monitoring permission may be missing)"
+            )
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "recording.start failed: \(error)")
+        }
+    },
+
+    "recording.stop": { _ in
+        do {
+            try Recorder.shared.stop()
+            return .object(["ok": .bool(true)])
+        } catch RecordingError.notRecording {
+            return .object(["ok": .bool(true), "wasActive": .bool(false)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "recording.stop failed: \(error)")
+        }
+    },
+
+    "recording.poll": { _ in
+        let events = Recorder.shared.drain()
+        return .object([
+            "events": .array(events),
+            "active": .bool(Recorder.shared.isRecording()),
+        ])
+    },
 ]
 
 // MARK: - Dispatch helpers
