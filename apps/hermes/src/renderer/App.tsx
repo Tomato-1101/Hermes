@@ -1,6 +1,70 @@
-import type { MouseEvent as ReactMouseEvent } from 'react';
-import { useEffect, useState } from 'react';
+import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useStore, type Step } from './store.js';
+
+// ---------------------------------------------------------------------------
+// Prompt modal
+//
+// Electron 33 disables window.prompt / alert / confirm in the renderer
+// (they block the renderer's event loop). We provide an async replacement
+// via context — call sites do `const v = await prompt({ title, defaultValue })`.
+// ---------------------------------------------------------------------------
+
+type PromptOpts = { title: string; defaultValue?: string; placeholder?: string };
+type PromptFn = (opts: PromptOpts) => Promise<string | null>;
+
+const PromptContext = createContext<PromptFn | null>(null);
+
+function usePrompt(): PromptFn {
+  const fn = useContext(PromptContext);
+  if (!fn) throw new Error('usePrompt must be used inside <PromptProvider>');
+  return fn;
+}
+
+function PromptProvider({ children }: { children: ReactNode }) {
+  const [request, setRequest] = useState<{
+    opts: PromptOpts;
+    resolve: (v: string | null) => void;
+  } | null>(null);
+  const [value, setValue] = useState('');
+
+  const prompt = useCallback<PromptFn>((opts) => {
+    setValue(opts.defaultValue ?? '');
+    return new Promise<string | null>((resolve) => setRequest({ opts, resolve }));
+  }, []);
+
+  const close = (result: string | null): void => {
+    request?.resolve(result);
+    setRequest(null);
+  };
+
+  return (
+    <PromptContext.Provider value={prompt}>
+      {children}
+      {request && (
+        <div className="modal-overlay" onClick={() => close(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{request.opts.title}</h3>
+            <input
+              autoFocus
+              value={value}
+              placeholder={request.opts.placeholder ?? ''}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') close(value);
+                if (e.key === 'Escape') close(null);
+              }}
+            />
+            <div className="modal-actions">
+              <button onClick={() => close(null)}>キャンセル</button>
+              <button className="primary" onClick={() => close(value)}>OK</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </PromptContext.Provider>
+  );
+}
 
 type AppInfo = {
   name: string;
@@ -88,11 +152,13 @@ export function App() {
   }, []);
 
   return (
-    <div className="app">
-      <FlowSidebar />
-      <Editor />
-      <Inspector appInfo={appInfo} />
-    </div>
+    <PromptProvider>
+      <div className="app">
+        <FlowSidebar />
+        <Editor />
+        <Inspector appInfo={appInfo} />
+      </div>
+    </PromptProvider>
   );
 }
 
@@ -105,9 +171,10 @@ function FlowSidebar() {
   const currentId = useStore((s) => s.currentFlow?.id ?? null);
   const openFlow = useStore((s) => s.openFlow);
   const createFlow = useStore((s) => s.createFlow);
+  const prompt = usePrompt();
 
-  const onNew = async () => {
-    const name = window.prompt('新しいフローの名前は？', 'Untitled flow');
+  const onNew = async (): Promise<void> => {
+    const name = await prompt({ title: '新しいフローの名前は？', defaultValue: 'Untitled flow' });
     if (!name) return;
     await createFlow(name);
   };
@@ -158,6 +225,8 @@ function Editor() {
   const undoStackLen = useStore((s) => s.undoStack.length);
   const redoStackLen = useStore((s) => s.redoStack.length);
   const addStructuralStep = useStore((s) => s.addStructuralStep);
+  const appendLog = useStore((s) => s.appendLog);
+  const prompt = usePrompt();
 
   if (!flow) {
     return (
@@ -170,20 +239,24 @@ function Editor() {
     );
   }
 
-  const onRecord = async () => {
+  const onRecord = async (): Promise<void> => {
     if (recording) {
       await window.hermes.recorderStop();
       return;
     }
-    const url = window.prompt('開始 URL（省略可、空白なら録画のみ開始）', 'https://example.com');
+    const url = await prompt({
+      title: '開始 URL（省略可、空白なら録画のみ開始）',
+      defaultValue: 'https://example.com',
+    });
+    if (url === null) return; // user cancelled
     try {
       await window.hermes.recorderStart(flow.id, url || undefined);
     } catch (e) {
-      alert(`録画開始に失敗: ${(e as Error).message}`);
+      appendLog({ ts: Date.now(), level: 'error', message: `録画開始に失敗: ${(e as Error).message}` });
     }
   };
 
-  const onRun = async () => {
+  const onRun = async (): Promise<void> => {
     if (running) {
       await window.hermes.runStop();
       return;
@@ -191,7 +264,7 @@ function Editor() {
     try {
       await window.hermes.runStart(flow.id);
     } catch (e) {
-      alert(`再生に失敗: ${(e as Error).message}`);
+      appendLog({ ts: Date.now(), level: 'error', message: `再生に失敗: ${(e as Error).message}` });
     }
   };
 

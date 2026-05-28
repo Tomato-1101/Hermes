@@ -193,6 +193,42 @@ hr {
 }
 .small { font-size: 11px; }
 
+/* Prompt modal (replaces window.prompt blocked by Electron) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: 420px;
+  max-width: calc(100% - 40px);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+}
+.modal h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.modal input {
+  width: 100%;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.modal-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* Inspector */
 .step-editor h3, .step-editor h4, .diag h3 {
   margin: 0 0 8px;
