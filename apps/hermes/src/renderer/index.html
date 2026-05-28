@@ -2,9 +2,15 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      'unsafe-inline' / 'unsafe-eval' は Vite dev の React Fast Refresh が
+      <head> にインラインスクリプトを注入するため必要。本番ビルドではバンドル
+      された 1 ファイルだけになるので、prod では vite の transformIndexHtml
+      で締め直す予定（Phase 1d 以降）。
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: http://localhost:* https://openrouter.ai;"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: http://localhost:* https://openrouter.ai;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Hermes</title>
