@@ -46,6 +46,12 @@ type SidecarRecordingEvent =
       kind: 'key';
       keys: string[];
       ts: number;
+    }
+  | {
+      seq: number;
+      kind: 'type';
+      text: string;
+      ts: number;
     };
 
 export type DesktopRecorderEvents = {
@@ -126,7 +132,32 @@ export class DesktopRecorder {
   private toStep(ev: SidecarRecordingEvent): Step | null {
     if (ev.kind === 'click') return this.buildClickStep(ev);
     if (ev.kind === 'key') return this.buildKeyStep(ev);
+    if (ev.kind === 'type') return this.buildTypeStep(ev);
     return null;
+  }
+
+  private buildTypeStep(ev: Extract<SidecarRecordingEvent, { kind: 'type' }>): Step {
+    // The desktop type handler relies on OS focus at replay time, not on a
+    // resolved selector. We still ship a layer='desktop' target so the
+    // engine routes the step to the desktop handler instead of the web one;
+    // the candidate is a screen-anchored placeholder that no one reads.
+    const target: TargetRef = {
+      layer: 'desktop',
+      candidates: [{ kind: 'coords', x: 0, y: 0, anchor: 'screen' }],
+    };
+    return {
+      id: newId(),
+      type: 'type',
+      enabled: true,
+      target,
+      params: { text: ev.text, clearFirst: false },
+      label: `Type "${trim(ev.text, 30)}"`,
+      meta: {
+        recordedAt: new Date(ev.ts * 1000).toISOString(),
+        recordedBy: 'desktop-recorder',
+        origin: 'recorded',
+      },
+    };
   }
 
   private buildClickStep(ev: Extract<SidecarRecordingEvent, { kind: 'click' }>): Step {
@@ -172,10 +203,18 @@ export class DesktopRecorder {
   }
 
   private buildKeyStep(ev: Extract<SidecarRecordingEvent, { kind: 'key' }>): Step {
+    // Tag the step as desktop-layer so the engine routes to the desktop
+    // adapter's key_combo handler instead of falling back to the web one
+    // (which assumes a Playwright page is available).
+    const target: TargetRef = {
+      layer: 'desktop',
+      candidates: [{ kind: 'coords', x: 0, y: 0, anchor: 'screen' }],
+    };
     return {
       id: newId(),
       type: 'key_combo',
       enabled: true,
+      target,
       params: { keys: ev.keys },
       label: `Press ${ev.keys.join('+')}`,
       meta: {

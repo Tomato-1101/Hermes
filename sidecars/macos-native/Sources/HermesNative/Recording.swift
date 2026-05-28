@@ -43,6 +43,16 @@ final class Recorder {
 
     private var isActive = false
 
+    // Text-input batching state. Modifier-free keystrokes accumulate into
+    // `textBuffer`; the buffer is flushed (emitted as a single `type` step)
+    // when the user pauses for `TEXT_IDLE_MS`, switches focus via a mouse
+    // click, fires a modifier-key combo, or stops the recording.
+    private let textLock = NSLock()
+    private var textBuffer: String = ""
+    private var textBufferStartedAt: TimeInterval = 0
+    private var textIdleTimer: DispatchSourceTimer?
+    private static let TEXT_IDLE_MS: Int = 600
+
     private init() {}
 
     func start() throws {
@@ -108,6 +118,9 @@ final class Recorder {
 
     func stop() throws {
         if !isActive { throw RecordingError.notRecording }
+        // Flush any pending text input so the last typed string lands as a
+        // step instead of being silently discarded.
+        flushTextBuffer()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -146,6 +159,69 @@ final class Recorder {
         nextSeq += 1
         return nextSeq
     }
+
+    // MARK: - Text-input batching
+
+    /// Append a single character (or a few — IME composition can push more
+    /// than one UniChar in a single keyDown) into the pending text buffer
+    /// and reset the idle timer.
+    fileprivate func appendText(_ s: String) {
+        textLock.lock()
+        if textBuffer.isEmpty {
+            textBufferStartedAt = Date().timeIntervalSince1970
+        }
+        textBuffer.append(s)
+        let snapshot = textBuffer
+        textLock.unlock()
+        rearmIdleTimer(snapshot: snapshot)
+    }
+
+    /// Flush whatever's in the text buffer right now as a single `type` step.
+    /// Called on idle, on a modifier combo, on a mouse click, and on stop().
+    fileprivate func flushTextBuffer() {
+        textLock.lock()
+        let text = textBuffer
+        let startedAt = textBufferStartedAt
+        textBuffer = ""
+        textBufferStartedAt = 0
+        textIdleTimer?.cancel()
+        textIdleTimer = nil
+        textLock.unlock()
+
+        guard !text.isEmpty else { return }
+        let seq = nextSequence()
+        let event: JSONValue = .object([
+            "seq": .int(seq),
+            "kind": .string("type"),
+            "text": .string(text),
+            "ts": .double(startedAt > 0 ? startedAt : Date().timeIntervalSince1970),
+        ])
+        enqueue(event)
+    }
+
+    /// Rearm the dispatch timer that triggers `flushTextBuffer()` after
+    /// TEXT_IDLE_MS milliseconds of keyboard silence. The snapshot is only
+    /// used to skip the flush if the buffer already drained from another path.
+    private func rearmIdleTimer(snapshot: String) {
+        textLock.lock()
+        textIdleTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + .milliseconds(Self.TEXT_IDLE_MS))
+        timer.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            // Bail if someone else already flushed (e.g. a mouse click came in).
+            self.textLock.lock()
+            let currentLen = self.textBuffer.count
+            self.textLock.unlock()
+            if currentLen == 0 || currentLen < snapshot.count {
+                return
+            }
+            self.flushTextBuffer()
+        }
+        textIdleTimer = timer
+        timer.resume()
+        textLock.unlock()
+    }
 }
 
 // MARK: - CGEventTap callback
@@ -167,6 +243,9 @@ private let recordingTapCallback: CGEventTapCallBack = {
 
     switch type {
     case .leftMouseDown:
+        // A click is a focus / context change — flush any pending text input
+        // first so the IR ordering matches what the user did.
+        recorder.flushTextBuffer()
         let loc = event.location
         var fields: [String: JSONValue] = [
             "seq": .int(seq),
@@ -176,7 +255,6 @@ private let recordingTapCallback: CGEventTapCallBack = {
             "y": .double(loc.y),
             "ts": .double(ts),
         ]
-        // Best effort: AX snapshot of the element under the cursor.
         if let snap = try? elementAtPoint(x: loc.x, y: loc.y) {
             fields["element"] = snap
         }
@@ -185,28 +263,64 @@ private let recordingTapCallback: CGEventTapCallBack = {
     case .keyDown:
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
-        // Only record modifier-key combos to avoid drowning the IR in raw
-        // keystrokes (typing into a text field is captured as a separate
-        // 'change'-style event in a future phase).
-        let hasMod = flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate)
-        guard hasMod else { return passThrough }
+        // Ignore the modifier flag bits that aren't actually "down" modifiers
+        // (caps lock, secondary fn, numeric pad markers) when deciding combo
+        // vs. text.
+        let hasMod =
+            flags.contains(.maskCommand) ||
+            flags.contains(.maskControl) ||
+            flags.contains(.maskAlternate)
 
-        var keys: [JSONValue] = []
-        if flags.contains(.maskCommand) { keys.append(.string("meta")) }
-        if flags.contains(.maskControl) { keys.append(.string("ctrl")) }
-        if flags.contains(.maskAlternate) { keys.append(.string("alt")) }
-        if flags.contains(.maskShift) { keys.append(.string("shift")) }
-        if let keyName = keyNameFromCode(Int(keyCode)) {
-            keys.append(.string(keyName))
+        if hasMod {
+            // Modifier combo — flush any pending text input, then emit the
+            // combo as its own step.
+            recorder.flushTextBuffer()
+            var keys: [JSONValue] = []
+            if flags.contains(.maskCommand) { keys.append(.string("meta")) }
+            if flags.contains(.maskControl) { keys.append(.string("ctrl")) }
+            if flags.contains(.maskAlternate) { keys.append(.string("alt")) }
+            if flags.contains(.maskShift) { keys.append(.string("shift")) }
+            if let keyName = keyNameFromCode(Int(keyCode)) {
+                keys.append(.string(keyName))
+            }
+            let payload: JSONValue = .object([
+                "seq": .int(seq),
+                "kind": .string("key"),
+                "keys": .array(keys),
+                "ts": .double(ts),
+            ])
+            recorder.enqueue(payload)
+        } else {
+            // Plain typing — extract the Unicode string the OS would have
+            // produced and append to the in-flight text buffer.
+            var actualLength: Int = 0
+            var chars = [UniChar](repeating: 0, count: 8)
+            event.keyboardGetUnicodeString(
+                maxStringLength: chars.count,
+                actualStringLength: &actualLength,
+                unicodeString: &chars
+            )
+            if actualLength > 0 {
+                let text = String(utf16CodeUnits: chars, count: actualLength)
+                // Skip control characters (return / tab / delete / escape /
+                // arrows) — surface them as key steps instead so the engine
+                // can replay them faithfully via keyCombo.
+                if text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) {
+                    recorder.appendText(text)
+                } else if let keyName = keyNameFromCode(Int(keyCode)) {
+                    // Emit special key as a no-modifier "key" step so engines
+                    // replaying it still hit Enter/Tab/Esc/etc.
+                    recorder.flushTextBuffer()
+                    let payload: JSONValue = .object([
+                        "seq": .int(seq),
+                        "kind": .string("key"),
+                        "keys": .array([.string(keyName)]),
+                        "ts": .double(ts),
+                    ])
+                    recorder.enqueue(payload)
+                }
+            }
         }
-
-        let payload: JSONValue = .object([
-            "seq": .int(seq),
-            "kind": .string("key"),
-            "keys": .array(keys),
-            "ts": .double(ts),
-        ])
-        recorder.enqueue(payload)
 
     default:
         break
