@@ -10,3 +10,9 @@ export {
   collectSecretRefs,
   type InterpolateContext,
 } from './interpolate.js';
+export {
+  evaluateExpr,
+  parseExpr,
+  ExprError,
+  type ExprContext,
+} from './expr.js';

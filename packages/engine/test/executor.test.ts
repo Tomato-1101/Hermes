@@ -216,6 +216,119 @@ describe('StepExecutor', () => {
     expect(seen[0]).toEqual({ text: 'hi s3cret' });
   });
 
+  it('evaluates if condition as jsep expression and takes the then branch', async () => {
+    const registry = new HandlerRegistry();
+    const ran: string[] = [];
+    registry.register({
+      type: 'click',
+      execute: async (s) => {
+        ran.push(String(s.label ?? ''));
+        return { outcome: 'completed' };
+      },
+    });
+    const exec = new StepExecutor({ registry });
+    await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'if',
+          enabled: true,
+          params: { condition: 'var.score > 50' },
+          branches: [
+            {
+              name: 'then',
+              steps: [{ id: newId(), type: 'click', enabled: true, label: 'then-ran' }],
+            },
+          ],
+          children: [{ id: newId(), type: 'click', enabled: true, label: 'else-ran' }],
+        },
+      ]),
+      { inputs: { score: 90 } },
+    );
+    expect(ran).toEqual(['then-ran']);
+  });
+
+  it('takes the else branch when if condition is falsy', async () => {
+    const registry = new HandlerRegistry();
+    const ran: string[] = [];
+    registry.register({
+      type: 'click',
+      execute: async (s) => {
+        ran.push(String(s.label ?? ''));
+        return { outcome: 'completed' };
+      },
+    });
+    const exec = new StepExecutor({ registry });
+    await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'if',
+          enabled: true,
+          params: { condition: 'var.score > 50' },
+          branches: [
+            {
+              name: 'then',
+              steps: [{ id: newId(), type: 'click', enabled: true, label: 'then-ran' }],
+            },
+          ],
+          children: [{ id: newId(), type: 'click', enabled: true, label: 'else-ran' }],
+        },
+      ]),
+      { inputs: { score: 10 } },
+    );
+    expect(ran).toEqual(['else-ran']);
+  });
+
+  it('runs a while-loop until the condition turns false', async () => {
+    const registry = new HandlerRegistry();
+    let i = 0;
+    registry.register({
+      type: 'set_counter',
+      execute: async () => {
+        i++;
+        return { outcome: 'completed' };
+      },
+    });
+    const exec = new StepExecutor({ registry });
+    // Use a while loop with a simple expression that references a var that
+    // ticks down each iteration via set_counter side-effects.
+    await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'loop',
+          enabled: true,
+          params: { kind: 'while', condition: 'var.remaining > 0', maxIterations: 100 },
+          children: [{ id: newId(), type: 'set_counter', enabled: true }],
+        },
+      ]),
+      { inputs: { remaining: 0 } }, // condition false from the start
+    );
+    expect(i).toBe(0);
+  });
+
+  it('interpolates variables inside a log step message', async () => {
+    const registry = new HandlerRegistry();
+    const exec = new StepExecutor({ registry });
+    const logs: string[] = [];
+    exec.on((e) => {
+      if (e.type === 'log') logs.push(e.message);
+    });
+    await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'log',
+          enabled: true,
+          params: { message: 'hello ${var.name}', level: 'info' },
+        },
+      ]),
+      { inputs: { name: 'tomato' } },
+    );
+    expect(logs).toContain('hello tomato');
+  });
+
   it('runs the catch branch on try failure', async () => {
     const registry = new HandlerRegistry();
     registry.register({
