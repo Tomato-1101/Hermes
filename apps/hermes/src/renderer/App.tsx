@@ -247,6 +247,9 @@ function Editor() {
   const onRecord = async (): Promise<void> => {
     if (recording) {
       await window.hermes.recorderStop();
+      // Persist the just-recorded steps so the next 再生 sees them.
+      // The store guards against the no-flow case.
+      try { await saveFlow(); } catch { /* logged via store */ }
       return;
     }
     const url = await prompt({
@@ -267,6 +270,10 @@ function Editor() {
       return;
     }
     try {
+      // Persist any unsaved edits before running — the engine reads the
+      // flow from disk, so an in-memory-only flow would execute as the
+      // last-saved (often empty) version and silently no-op.
+      if (dirty) await saveFlow();
       await window.hermes.runStart(flow.id);
     } catch (e) {
       appendLog({ ts: Date.now(), level: 'error', message: `再生に失敗: ${(e as Error).message}` });
