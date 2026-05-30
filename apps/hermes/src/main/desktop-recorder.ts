@@ -3,8 +3,8 @@
  *
  * Subscribes to the hermes-native sidecar via JSON-RPC: starts a global
  * mouse / modifier-key recording, polls every 150ms for new events, and
- * emits them as IR Steps (`click` / `key_combo`) tagged with layer
- * 'desktop'. The Step shape mirrors what WebRecorder emits so the
+ * emits them as IR Steps (`click` / `key_combo` / `type` / `scroll` / `drag`)
+ * tagged with layer 'desktop'. The Step shape mirrors what WebRecorder emits so the
  * orchestrator in RunController can route both through the same
  * `recorder:step` event channel.
  *
@@ -52,6 +52,25 @@ type SidecarRecordingEvent =
       kind: 'type';
       text: string;
       ts: number;
+    }
+  | {
+      seq: number;
+      kind: 'scroll';
+      x: number;
+      y: number;
+      dx: number;
+      dy: number;
+      ts: number;
+    }
+  | {
+      seq: number;
+      kind: 'drag';
+      x: number;
+      y: number;
+      toX: number;
+      toY: number;
+      ts: number;
+      element?: AxSnapshot;
     };
 
 export type DesktopRecorderEvents = {
@@ -170,6 +189,8 @@ export class DesktopRecorder {
     if (ev.kind === 'click') return this.buildClickStep(ev);
     if (ev.kind === 'key') return this.buildKeyStep(ev);
     if (ev.kind === 'type') return this.buildTypeStep(ev);
+    if (ev.kind === 'scroll') return this.buildScrollStep(ev);
+    if (ev.kind === 'drag') return this.buildDragStep(ev);
     return null;
   }
 
@@ -254,6 +275,67 @@ export class DesktopRecorder {
       target,
       params: { keys: ev.keys },
       label: `Press ${ev.keys.join('+')}`,
+      meta: {
+        recordedAt: new Date(ev.ts * 1000).toISOString(),
+        recordedBy: 'desktop-recorder',
+        origin: 'recorded',
+      },
+    };
+  }
+
+  private buildScrollStep(ev: Extract<SidecarRecordingEvent, { kind: 'scroll' }>): Step {
+    // Scroll replays at a screen point with accumulated pixel deltas; the
+    // desktop scroll handler reads params.dx/dy. dy>0 scrolls down (the
+    // sidecar already converted the wheel axis sign to this convention).
+    const target: TargetRef = {
+      layer: 'desktop',
+      candidates: [{ kind: 'coords', x: ev.x, y: ev.y, anchor: 'screen' }],
+    };
+    return {
+      id: newId(),
+      type: 'scroll',
+      enabled: true,
+      target,
+      params: { dx: ev.dx, dy: ev.dy },
+      label: `Scroll (${Math.round(ev.dx)}, ${Math.round(ev.dy)})`,
+      meta: {
+        recordedAt: new Date(ev.ts * 1000).toISOString(),
+        recordedBy: 'desktop-recorder',
+        origin: 'recorded',
+      },
+    };
+  }
+
+  private buildDragStep(ev: Extract<SidecarRecordingEvent, { kind: 'drag' }>): Step {
+    // `from` is the press point; the desktop drag handler reads it via the
+    // coords candidate of target and `to` from params. An ax candidate is
+    // kept first (when available) for later semantic resolution, exactly as
+    // buildClickStep does — coordsFromTarget still finds the coords one.
+    const candidates: TargetRef['candidates'] = [];
+    if (ev.element) {
+      const e = ev.element;
+      const ax: { kind: 'ax'; app: string; role: string; title?: string; identifier?: string } = {
+        kind: 'ax',
+        app: e.app?.bundleId ?? e.app?.name ?? '',
+        role: e.role ?? '',
+      };
+      if (e.title) ax.title = e.title;
+      if (e.identifier) ax.identifier = e.identifier;
+      candidates.push(ax);
+    }
+    candidates.push({ kind: 'coords', x: ev.x, y: ev.y, anchor: 'screen' });
+
+    const target: TargetRef = {
+      layer: 'desktop',
+      candidates,
+    };
+    return {
+      id: newId(),
+      type: 'drag',
+      enabled: true,
+      target,
+      params: { to: { x: ev.toX, y: ev.toY } },
+      label: `Drag → (${Math.round(ev.toX)}, ${Math.round(ev.toY)})`,
       meta: {
         recordedAt: new Date(ev.ts * 1000).toISOString(),
         recordedBy: 'desktop-recorder',

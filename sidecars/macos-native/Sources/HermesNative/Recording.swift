@@ -53,6 +53,32 @@ final class Recorder {
     private var textIdleTimer: DispatchSourceTimer?
     private static let TEXT_IDLE_MS: Int = 600
 
+    // Click-vs-drag disambiguation. A left press is buffered until its
+    // matching release: if the cursor moved past DRAG_THRESHOLD points
+    // between down and up we emit a `drag`, otherwise a `click`. The element
+    // snapshot is taken at the press point (the meaningful target for both).
+    private struct PendingMouseDown {
+        let x: Double
+        let y: Double
+        let ts: TimeInterval
+        let element: JSONValue?
+    }
+    private let mouseLock = NSLock()
+    private var pendingDown: PendingMouseDown?
+    private static let DRAG_THRESHOLD: Double = 5.0
+
+    // Scroll batching. A single scroll gesture fires many wheel events; we
+    // accumulate their pixel deltas and flush one `scroll` step when the wheel
+    // goes idle for SCROLL_IDLE_MS (or another event interrupts the gesture).
+    private let scrollLock = NSLock()
+    private var scrollDx: Double = 0
+    private var scrollDy: Double = 0
+    private var scrollX: Double = 0
+    private var scrollY: Double = 0
+    private var scrollStartedAt: TimeInterval = 0
+    private var scrollIdleTimer: DispatchSourceTimer?
+    private static let SCROLL_IDLE_MS: Int = 300
+
     private init() {}
 
     func start() throws {
@@ -69,6 +95,8 @@ final class Recorder {
 
             let mask: CGEventMask =
                 (1 << CGEventType.leftMouseDown.rawValue) |
+                (1 << CGEventType.leftMouseUp.rawValue) |
+                (1 << CGEventType.scrollWheel.rawValue) |
                 (1 << CGEventType.keyDown.rawValue)
 
             // The userInfo pointer is read inside the C callback; we pass an
@@ -118,9 +146,11 @@ final class Recorder {
 
     func stop() throws {
         if !isActive { throw RecordingError.notRecording }
-        // Flush any pending text input so the last typed string lands as a
-        // step instead of being silently discarded.
+        // Flush any pending text / scroll / press so the last action lands as
+        // a step instead of being silently discarded.
         flushTextBuffer()
+        flushScrollBuffer()
+        flushPendingDownAsClick()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -222,6 +252,133 @@ final class Recorder {
         timer.resume()
         textLock.unlock()
     }
+
+    // MARK: - Click / drag disambiguation
+
+    /// Buffer a left press. A press starts a new gesture, so any in-flight
+    /// text/scroll is flushed first to keep IR ordering faithful.
+    fileprivate func beginMouseDown(x: Double, y: Double, ts: TimeInterval, element: JSONValue?) {
+        flushTextBuffer()
+        flushScrollBuffer()
+        mouseLock.lock()
+        pendingDown = PendingMouseDown(x: x, y: y, ts: ts, element: element)
+        mouseLock.unlock()
+    }
+
+    /// Resolve a buffered press against its release: drag if the cursor moved,
+    /// click otherwise.
+    fileprivate func endMouseUp(x: Double, y: Double) {
+        mouseLock.lock()
+        let down = pendingDown
+        pendingDown = nil
+        mouseLock.unlock()
+        guard let d = down else { return }
+        if hypot(x - d.x, y - d.y) >= Self.DRAG_THRESHOLD {
+            enqueueDrag(from: d, toX: x, toY: y)
+        } else {
+            enqueueClick(from: d)
+        }
+    }
+
+    /// Emit any dangling press (recording stopped mid-gesture) as a click.
+    fileprivate func flushPendingDownAsClick() {
+        mouseLock.lock()
+        let down = pendingDown
+        pendingDown = nil
+        mouseLock.unlock()
+        guard let d = down else { return }
+        enqueueClick(from: d)
+    }
+
+    private func enqueueClick(from d: PendingMouseDown) {
+        var fields: [String: JSONValue] = [
+            "seq": .int(nextSequence()),
+            "kind": .string("click"),
+            "button": .string("left"),
+            "x": .double(d.x),
+            "y": .double(d.y),
+            "ts": .double(d.ts),
+        ]
+        if let el = d.element { fields["element"] = el }
+        enqueue(.object(fields))
+    }
+
+    private func enqueueDrag(from d: PendingMouseDown, toX: Double, toY: Double) {
+        var fields: [String: JSONValue] = [
+            "seq": .int(nextSequence()),
+            "kind": .string("drag"),
+            "x": .double(d.x),
+            "y": .double(d.y),
+            "toX": .double(toX),
+            "toY": .double(toY),
+            "ts": .double(d.ts),
+        ]
+        if let el = d.element { fields["element"] = el }
+        enqueue(.object(fields))
+    }
+
+    // MARK: - Scroll batching
+
+    /// Accumulate one wheel event's pixel delta into the pending scroll
+    /// gesture (deltas already converted to the replay convention by the
+    /// caller). Type input is flushed first so it stays ordered before the
+    /// scroll that follows it.
+    fileprivate func accumulateScroll(x: Double, y: Double, dx: Double, dy: Double) {
+        flushTextBuffer()
+        scrollLock.lock()
+        if scrollDx == 0, scrollDy == 0 {
+            scrollStartedAt = Date().timeIntervalSince1970
+        }
+        scrollDx += dx
+        scrollDy += dy
+        scrollX = x
+        scrollY = y
+        scrollLock.unlock()
+        rearmScrollIdleTimer()
+    }
+
+    /// Flush the accumulated scroll gesture as a single `scroll` step.
+    fileprivate func flushScrollBuffer() {
+        scrollLock.lock()
+        let dx = scrollDx
+        let dy = scrollDy
+        let x = scrollX
+        let y = scrollY
+        let startedAt = scrollStartedAt
+        scrollDx = 0
+        scrollDy = 0
+        scrollX = 0
+        scrollY = 0
+        scrollStartedAt = 0
+        scrollIdleTimer?.cancel()
+        scrollIdleTimer = nil
+        scrollLock.unlock()
+
+        guard dx != 0 || dy != 0 else { return }
+        let event: JSONValue = .object([
+            "seq": .int(nextSequence()),
+            "kind": .string("scroll"),
+            "x": .double(x),
+            "y": .double(y),
+            "dx": .double(dx),
+            "dy": .double(dy),
+            "ts": .double(startedAt > 0 ? startedAt : Date().timeIntervalSince1970),
+        ])
+        enqueue(event)
+    }
+
+    private func rearmScrollIdleTimer() {
+        scrollLock.lock()
+        scrollIdleTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + .milliseconds(Self.SCROLL_IDLE_MS))
+        timer.setEventHandler { [weak self] in
+            self?.flushScrollBuffer()
+        }
+        scrollIdleTimer = timer
+        timer.resume()
+        scrollLock.unlock()
+    }
 }
 
 // MARK: - CGEventTap callback
@@ -238,29 +395,44 @@ private let recordingTapCallback: CGEventTapCallBack = {
     // listenOnly taps must always return the event unmodified.
     let passThrough = Unmanaged.passUnretained(event)
 
-    let seq = recorder.nextSequence()
     let ts = Date().timeIntervalSince1970
 
     switch type {
     case .leftMouseDown:
-        // A click is a focus / context change — flush any pending text input
-        // first so the IR ordering matches what the user did.
-        recorder.flushTextBuffer()
+        // Defer the decision: a press becomes a `drag` if the cursor moves
+        // before release, otherwise a `click`. The AX snapshot of the element
+        // under the press is the target for both. Resolved in endMouseUp.
         let loc = event.location
-        var fields: [String: JSONValue] = [
-            "seq": .int(seq),
-            "kind": .string("click"),
-            "button": .string("left"),
-            "x": .double(loc.x),
-            "y": .double(loc.y),
-            "ts": .double(ts),
-        ]
-        if let snap = try? elementAtPoint(x: loc.x, y: loc.y) {
-            fields["element"] = snap
+        let element = try? elementAtPoint(x: loc.x, y: loc.y)
+        recorder.beginMouseDown(x: loc.x, y: loc.y, ts: ts, element: element)
+
+    case .leftMouseUp:
+        let loc = event.location
+        recorder.endMouseUp(x: loc.x, y: loc.y)
+
+    case .scrollWheel:
+        let loc = event.location
+        // Prefer pixel deltas (trackpad / momentum); fall back to line deltas
+        // for a classic wheel (~10px per line). The wheel axis sign runs
+        // opposite to screen-space motion, so negate to match the replay
+        // convention (dy > 0 scrolls down). See postScroll in Input.swift.
+        let pdy = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        let pdx = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+        let stepDy: Double
+        let stepDx: Double
+        if pdy != 0 || pdx != 0 {
+            stepDy = Double(pdy)
+            stepDx = Double(pdx)
+        } else {
+            stepDy = event.getDoubleValueField(.scrollWheelEventDeltaAxis1) * 10
+            stepDx = event.getDoubleValueField(.scrollWheelEventDeltaAxis2) * 10
         }
-        recorder.enqueue(.object(fields))
+        recorder.accumulateScroll(x: loc.x, y: loc.y, dx: -stepDx, dy: -stepDy)
 
     case .keyDown:
+        // A key press ends any in-flight scroll gesture; flush it so the
+        // scroll step stays ordered before whatever the key produces.
+        recorder.flushScrollBuffer()
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags
         // Ignore the modifier flag bits that aren't actually "down" modifiers
@@ -284,7 +456,7 @@ private let recordingTapCallback: CGEventTapCallBack = {
                 keys.append(.string(keyName))
             }
             let payload: JSONValue = .object([
-                "seq": .int(seq),
+                "seq": .int(recorder.nextSequence()),
                 "kind": .string("key"),
                 "keys": .array(keys),
                 "ts": .double(ts),
@@ -312,7 +484,7 @@ private let recordingTapCallback: CGEventTapCallBack = {
                     // replaying it still hit Enter/Tab/Esc/etc.
                     recorder.flushTextBuffer()
                     let payload: JSONValue = .object([
-                        "seq": .int(seq),
+                        "seq": .int(recorder.nextSequence()),
                         "kind": .string("key"),
                         "keys": .array([.string(keyName)]),
                         "ts": .double(ts),
