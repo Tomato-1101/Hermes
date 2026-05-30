@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CURRENT_SCHEMA_VERSION, newId, type Flow } from '@hermes/ir';
@@ -52,6 +52,36 @@ describe('FlowStore', () => {
     await store.init(flow.id);
     const ref = await store.writeAsset(flow.id, 'step-1.png', Buffer.from('PNGDATA'));
     expect(ref).toBe('assets/step-1.png');
+  });
+
+  it('deleteFlow removes the flow directory and is idempotent', async () => {
+    const store = new FlowStore(join(tmp, 'flows'));
+    const flow = makeFlow();
+    await store.writeFlow(flow);
+    expect(existsSync(store.flowDir(flow.id))).toBe(true);
+    await store.deleteFlow(flow.id);
+    expect(existsSync(store.flowDir(flow.id))).toBe(false);
+    // Second delete should not throw.
+    await store.deleteFlow(flow.id);
+  });
+
+  it('duplicateFlow writes a new flow.json under a new id with the supplied name', async () => {
+    const store = new FlowStore(join(tmp, 'flows'));
+    const src = makeFlow();
+    await store.writeFlow(src);
+    const dstId = newId();
+    const copy = await store.duplicateFlow(src.id, {
+      ...src,
+      id: dstId,
+      name: 'sample (copy)',
+    });
+    expect(copy.id).toBe(dstId);
+    expect(copy.name).toBe('sample (copy)');
+    const persisted = await store.readFlow(dstId);
+    expect(persisted.id).toBe(dstId);
+    expect(persisted.name).toBe('sample (copy)');
+    // Source must remain untouched.
+    expect((await store.readFlow(src.id)).name).toBe('sample');
   });
 });
 

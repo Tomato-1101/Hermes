@@ -21,6 +21,24 @@ export interface ClickOpts {
   button?: MouseButton;
   clicks?: 1 | 2 | 3;
   modifiers?: Modifier[];
+  /** Pixels per second for the human-like move that precedes the click. */
+  speedPxPerSec?: number;
+  /** Floor / ceiling for the number of intermediate move events. */
+  minSteps?: number;
+  maxSteps?: number;
+  /** Skip the move-then-click humanization and post the click directly. */
+  instant?: boolean;
+  /**
+   * Force the pre-click move to take exactly this many milliseconds,
+   * regardless of the distance/speed computation. Used by the flow
+   * preprocessor that overlaps long moves with a preceding `wait` step,
+   * so the click fires at the recorded rhythm instead of "wait, then
+   * fly, then click" with extra latency tacked on.
+   *
+   * When set, `speedPxPerSec` is ignored for duration but still bounds
+   * the step count via the frame-interval target.
+   */
+  durationMsOverride?: number;
 }
 
 export interface TypeOpts {

@@ -18,16 +18,30 @@ const api = {
   openSettingsPane: (pane: string) =>
     ipcRenderer.invoke(IpcChannels.openSettingsPane, { pane }),
 
+  // App settings
+  settingsGet: () => ipcRenderer.invoke(IpcChannels.settingsGet),
+  settingsSet: (settings: unknown) =>
+    ipcRenderer.invoke(IpcChannels.settingsSet, { settings }),
+  settingsPickChromeProfile: () =>
+    ipcRenderer.invoke(IpcChannels.settingsPickChromeProfile),
+
   // Flow CRUD
   flowList: () => ipcRenderer.invoke(IpcChannels.flowList),
   flowCreate: (name: string) => ipcRenderer.invoke(IpcChannels.flowCreate, { name }),
   flowOpen: (id: string) => ipcRenderer.invoke(IpcChannels.flowOpen, { id }),
   flowSave: (flow: unknown) => ipcRenderer.invoke(IpcChannels.flowSave, { flow }),
+  flowDelete: (id: string) => ipcRenderer.invoke(IpcChannels.flowDelete, { id }),
+  flowDuplicate: (id: string, name: string) =>
+    ipcRenderer.invoke(IpcChannels.flowDuplicate, { id, name }),
+  flowRename: (id: string, name: string) =>
+    ipcRenderer.invoke(IpcChannels.flowRename, { id, name }),
 
   // Recorder
   recorderStart: (flowId: string, startUrl?: string, layer?: 'web' | 'desktop') =>
     ipcRenderer.invoke(IpcChannels.recorderStart, { flowId, startUrl, layer }),
   recorderStop: () => ipcRenderer.invoke(IpcChannels.recorderStop),
+  recorderSetRecordWaits: (enabled: boolean) =>
+    ipcRenderer.invoke(IpcChannels.recorderSetRecordWaits, { enabled }),
 
   // Runner
   runStart: (flowId: string, inputs?: Record<string, unknown>) =>

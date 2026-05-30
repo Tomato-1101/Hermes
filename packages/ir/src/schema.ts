@@ -36,6 +36,17 @@ export interface FlowDefaults {
   screenshotOnError: boolean;
   waitBetweenStepsMs: number;
   allowList?: AllowList;
+  /**
+   * Per-flow humanization defaults. Optional — when absent or any field is
+   * missing, the engine falls back to the global AppSettings.humanize value,
+   * then to a built-in default (mouseSpeedPxPerSec=800, typeDelayMs=50).
+   * Individual steps can still override with step.params.mouseSpeedPxPerSec
+   * or step.params.delayMs.
+   */
+  humanize?: {
+    mouseSpeedPxPerSec?: number;
+    typeDelayMs?: number;
+  };
 }
 
 export interface FlowMetadata {
@@ -75,6 +86,36 @@ export type StepType =
   | 'ai_extract'
   | 'log'
   | 'manual_pause';
+
+/**
+ * `wait_for` step params.kind values. Handlers dispatch on this; the JSON
+ * Schema keeps params as a free-form object so new kinds can land without a
+ * breaking schema bump. Add to this list when introducing a new wait_for
+ * variant; an `ai.*` family is reserved for the Phase-2 vision/AI judgments.
+ *
+ * - 'time'                  numeric ms timeout (same shape as `wait`)
+ * - 'web.load'              page load state (params.state: load|domcontentloaded|networkidle)
+ * - 'web.element'           DOM element appears (uses Step.target + params.state)
+ * - 'web.url'               current page URL matches params.url (substring or pattern)
+ * - 'desktop.element'       AX element appears (uses Step.target)
+ * - 'desktop.app_focus'     frontmost app's bundleId equals params.appBundleId
+ * - 'desktop.window_title'  frontmost window title matches params.titlePattern
+ * - 'desktop.screen_stable' screen pixels stable for params.stableMs (uses adapter screenshot)
+ * - 'expr'                  jsep expression in params.expr becomes truthy
+ */
+export const WAIT_FOR_KINDS = [
+  'time',
+  'web.load',
+  'web.element',
+  'web.url',
+  'desktop.element',
+  'desktop.app_focus',
+  'desktop.window_title',
+  'desktop.screen_stable',
+  'expr',
+] as const;
+
+export type WaitForKind = (typeof WAIT_FOR_KINDS)[number];
 
 export interface Step {
   id: string;

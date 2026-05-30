@@ -1,5 +1,5 @@
 import mitt, { type Emitter } from 'mitt';
-import type { Flow, Step } from '@hermes/ir';
+import type { Flow, Step, WaitForKind } from '@hermes/ir';
 import {
   evaluateExpr,
   ExprError,
@@ -96,11 +96,18 @@ export class StepExecutor {
   }
 
   private async runSteps(steps: Step[], ctx: RunContext, cursorPrefix: string): Promise<void> {
+    const padMs = Math.max(0, ctx.flow.defaults.waitBetweenStepsMs ?? 0);
+    let firstRan = false;
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i]!;
       if (!step.enabled) continue;
+      // Insert the inter-step padding *between* executed steps — not before
+      // the first one and not after a disabled one, so a flow whose top is
+      // all-disabled doesn't sleep for no reason.
+      if (firstRan && padMs > 0) await sleep(padMs, ctx.signal);
       this.assertNotAborted(ctx);
       await this.runStep(step, ctx, `${cursorPrefix}[${i}]`);
+      firstRan = true;
     }
   }
 
@@ -162,6 +169,8 @@ export class StepExecutor {
           message: String(resolved.params?.message ?? ''),
         });
         return { outcome: 'completed' };
+      case 'wait_for':
+        return this.executeWaitFor(resolved, ctx);
       default: {
         const handler = this.registry.get(resolved.type, resolved.target?.layer);
         if (!handler) {
@@ -172,6 +181,63 @@ export class StepExecutor {
         return await withTimeout(promise, resolved.timeoutMs ?? ctx.flow.defaults.timeoutMs, ctx.signal);
       }
     }
+  }
+
+  /**
+   * `wait_for` dispatch. `kind=time` and `kind=expr` are handled here so
+   * neither web nor desktop providers need to be present. Anything else is
+   * routed to the layer-specific handler registered as ('wait_for', layer).
+   *
+   * Legacy `wait_for` steps that pre-date `params.kind` are interpreted from
+   * `target.layer` — keeps existing flows working without a migration.
+   */
+  private async executeWaitFor(step: Step, ctx: RunContext): Promise<StepResult> {
+    const params = step.params ?? {};
+    const explicitKind = params['kind'] as WaitForKind | undefined;
+    const kind: WaitForKind = explicitKind ?? this.inferWaitForKind(step);
+    const timeoutMs = Number(params['timeoutMs'] ?? step.timeoutMs ?? ctx.flow.defaults.timeoutMs);
+    const pollIntervalMs = Math.max(10, Number(params['pollIntervalMs'] ?? 100));
+
+    if (kind === 'time') {
+      const ms = Number(params['ms'] ?? params['timeoutMs'] ?? 0);
+      await sleep(ms, ctx.signal);
+      return { outcome: 'completed' };
+    }
+
+    if (kind === 'expr') {
+      const expr = params['expr'];
+      const deadline = Date.now() + Math.max(0, timeoutMs);
+      while (Date.now() < deadline) {
+        this.assertNotAborted(ctx);
+        if (this.evalCondition(expr, ctx)) return { outcome: 'completed' };
+        await sleep(pollIntervalMs, ctx.signal);
+      }
+      throw Object.assign(new Error(`wait_for expr timed out after ${timeoutMs}ms`), {
+        class: 'timeout',
+      });
+    }
+
+    const layer = kind.startsWith('web.')
+      ? 'web'
+      : kind.startsWith('desktop.')
+        ? 'desktop'
+        : step.target?.layer;
+    const handler = this.registry.get('wait_for', layer);
+    if (!handler) {
+      throw new Error(`No wait_for handler for kind="${kind}" (layer="${layer ?? 'default'}")`);
+    }
+    const promise = handler.execute(step, ctx);
+    return await withTimeout(promise, timeoutMs, ctx.signal);
+  }
+
+  /** Pre-`kind` flows: derive from target.layer + presence of params keys. */
+  private inferWaitForKind(step: Step): WaitForKind {
+    const p = step.params ?? {};
+    if (typeof p['expr'] === 'string') return 'expr';
+    if (typeof p['url'] === 'string' && step.target === undefined) return 'web.url';
+    if (step.target?.layer === 'desktop') return 'desktop.element';
+    if (step.target !== undefined) return 'web.element';
+    return 'time';
   }
 
   /**

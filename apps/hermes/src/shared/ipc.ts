@@ -16,14 +16,22 @@ export const IpcChannels = {
   sidecarPing: 'sidecar:ping',
   permissionStatus: 'permission:status',
   openSettingsPane: 'permission:openSettings',
+  // App preferences
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  settingsPickChromeProfile: 'settings:pickChromeProfile',
   // Flow lifecycle
   flowList: 'flow:list',
   flowCreate: 'flow:create',
   flowOpen: 'flow:open',
   flowSave: 'flow:save',
+  flowDelete: 'flow:delete',
+  flowDuplicate: 'flow:duplicate',
+  flowRename: 'flow:rename',
   // Recorder
   recorderStart: 'recorder:start',
   recorderStop: 'recorder:stop',
+  recorderSetRecordWaits: 'recorder:setRecordWaits',
   // Runner
   runStart: 'run:start',
   runStop: 'run:stop',
@@ -78,6 +86,38 @@ export const PermissionStatusResult = z.object({
 export const OpenSettingsArgs = z.object({ pane: PermissionName });
 export const OpenSettingsResult = z.object({ opened: z.boolean() });
 
+// --- app settings ---
+export const BrowserProfileMode = z.enum([
+  'hermes-profile',
+  'system-chrome',
+  'system-chrome-import',
+]);
+export type BrowserProfileMode = z.infer<typeof BrowserProfileMode>;
+
+export const AppSettingsSchema = z.object({
+  browser: z.object({
+    mode: BrowserProfileMode,
+    systemChromePath: z.string().optional(),
+    systemChromeProfileName: z.string().optional(),
+    channel: z.enum(['chrome', 'chromium']).optional(),
+  }),
+  humanize: z.object({
+    mouseSpeedPxPerSec: z.number().nonnegative(),
+    typeDelayMs: z.number().nonnegative(),
+    mouseMinSteps: z.number().int().nonnegative(),
+    mouseMaxSteps: z.number().int().nonnegative(),
+  }),
+});
+
+export const SettingsGetResult = z.object({ settings: AppSettingsSchema });
+export const SettingsSetArgs = z.object({ settings: AppSettingsSchema });
+export const SettingsSetResult = z.object({ ok: z.literal(true) });
+export const SettingsPickChromeProfileResult = z.object({
+  picked: z.boolean(),
+  path: z.string().optional(),
+  name: z.string().optional(),
+});
+
 // --- flow types ---
 // The renderer doesn't get the IR validated zod-side (the IR ships its own
 // ajv schema in @hermes/ir). We pass it through as an opaque JSON record.
@@ -116,6 +156,21 @@ export const FlowOpenResult = z.object({ flow: FlowSchema });
 export const FlowSaveArgs = z.object({ flow: FlowSchema });
 export const FlowSaveResult = z.object({ ok: z.literal(true) });
 
+export const FlowDeleteArgs = z.object({ id: z.string() });
+export const FlowDeleteResult = z.object({ deleted: z.boolean() });
+
+export const FlowDuplicateArgs = z.object({
+  id: z.string(),
+  name: z.string().min(1).max(128),
+});
+export const FlowDuplicateResult = z.object({ flow: FlowSchema });
+
+export const FlowRenameArgs = z.object({
+  id: z.string(),
+  name: z.string().min(1).max(128),
+});
+export const FlowRenameResult = z.object({ flow: FlowSchema });
+
 // --- recorder ---
 // startUrl is validated leniently here so the renderer doesn't have to ship a
 // URL parser to its prompt; the controller does the actual normalization
@@ -131,6 +186,9 @@ export const RecorderStartResult = z.object({ ok: z.literal(true) });
 
 export const RecorderStopArgs = z.void();
 export const RecorderStopResult = z.object({ ok: z.literal(true) });
+
+export const RecorderSetRecordWaitsArgs = z.object({ enabled: z.boolean() });
+export const RecorderSetRecordWaitsResult = z.object({ ok: z.literal(true) });
 
 // --- runner ---
 export const RunStartArgs = z.object({
@@ -189,12 +247,25 @@ export const IpcContract = {
   [IpcChannels.sidecarPing]: { args: z.void(), result: SidecarPingResult },
   [IpcChannels.permissionStatus]: { args: z.void(), result: PermissionStatusResult },
   [IpcChannels.openSettingsPane]: { args: OpenSettingsArgs, result: OpenSettingsResult },
+  [IpcChannels.settingsGet]: { args: z.void(), result: SettingsGetResult },
+  [IpcChannels.settingsSet]: { args: SettingsSetArgs, result: SettingsSetResult },
+  [IpcChannels.settingsPickChromeProfile]: {
+    args: z.void(),
+    result: SettingsPickChromeProfileResult,
+  },
   [IpcChannels.flowList]: { args: z.void(), result: FlowListResult },
   [IpcChannels.flowCreate]: { args: FlowCreateArgs, result: FlowCreateResult },
   [IpcChannels.flowOpen]: { args: FlowOpenArgs, result: FlowOpenResult },
   [IpcChannels.flowSave]: { args: FlowSaveArgs, result: FlowSaveResult },
+  [IpcChannels.flowDelete]: { args: FlowDeleteArgs, result: FlowDeleteResult },
+  [IpcChannels.flowDuplicate]: { args: FlowDuplicateArgs, result: FlowDuplicateResult },
+  [IpcChannels.flowRename]: { args: FlowRenameArgs, result: FlowRenameResult },
   [IpcChannels.recorderStart]: { args: RecorderStartArgs, result: RecorderStartResult },
   [IpcChannels.recorderStop]: { args: RecorderStopArgs, result: RecorderStopResult },
+  [IpcChannels.recorderSetRecordWaits]: {
+    args: RecorderSetRecordWaitsArgs,
+    result: RecorderSetRecordWaitsResult,
+  },
   [IpcChannels.runStart]: { args: RunStartArgs, result: RunStartResult },
   [IpcChannels.runStop]: { args: RunStopArgs, result: RunStopResult },
   [IpcChannels.vaultList]: { args: z.void(), result: VaultListResult },

@@ -192,31 +192,43 @@ class Sidecar {
 function locateBinary(): string | null {
   const __dirname = fileURLToPath(new URL('.', import.meta.url));
   // Search order:
-  //   1. HERMES_NATIVE_BIN env override
+  //   1. HERMES_NATIVE_BIN env override (always wins — explicit beats implicit)
   //   2. packaged resources next to the app (process.resourcesPath/sidecars/hermes-native)
-  //   3. monorepo dev build (sidecars/macos-native/.build/debug/hermes-native)
-  //   4. monorepo release build (.build/release/hermes-native)
-  const candidates: string[] = [];
-  const env = process.env['HERMES_NATIVE_BIN'];
-  if (env) candidates.push(env);
+  //   3. monorepo build: pick the NEWEST of debug/release. Picking by build
+  //      order (debug then release) used to cause "stale binary" bugs: the
+  //      developer would `swift build -c release` after a code fix but the
+  //      old debug build silently won the lookup, so RPC behavior diverged
+  //      from source. mtime-based selection eliminates that whole class.
   if (app && app.isPackaged) {
-    candidates.push(join(process.resourcesPath, 'sidecars', 'hermes-native'));
+    const packaged = join(process.resourcesPath, 'sidecars', 'hermes-native');
+    if (existsSync(packaged) && statSync(packaged).isFile()) return packaged;
   }
+  const envBin = process.env['HERMES_NATIVE_BIN'];
+  if (envBin && existsSync(envBin) && statSync(envBin).isFile()) return envBin;
+
   const repoRoot = resolve(__dirname, '..', '..', '..', '..');
-  candidates.push(
+  const buildCandidates = [
     join(repoRoot, 'sidecars', 'macos-native', '.build', 'debug', 'hermes-native'),
     join(repoRoot, 'sidecars', 'macos-native', '.build', 'release', 'hermes-native'),
-  );
-  for (const c of candidates) {
+  ];
+  let pick: { path: string; mtime: number } | null = null;
+  for (const c of buildCandidates) {
     try {
-      if (existsSync(c) && statSync(c).isFile()) return c;
+      if (!existsSync(c)) continue;
+      const s = statSync(c);
+      if (!s.isFile()) continue;
+      const mtime = s.mtimeMs;
+      if (!pick || mtime > pick.mtime) pick = { path: c, mtime };
     } catch {
-      // ignore
+      // ignore — directory may not exist on first ever launch
     }
   }
-  // ensure the dir exists for diagnostic logs
+  if (pick) return pick.path;
+
+  // Nothing found. Make sure the build dir exists so the dev sees the
+  // expected location in a "binary not found" error log.
   try {
-    mkdirSync(dirname(candidates[candidates.length - 1]!), { recursive: true });
+    mkdirSync(dirname(buildCandidates[buildCandidates.length - 1]!), { recursive: true });
   } catch {
     // ignore
   }

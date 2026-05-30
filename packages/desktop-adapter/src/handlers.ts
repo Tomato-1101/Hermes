@@ -29,6 +29,30 @@ function adapter(ctx: RunContext): DesktopAdapter {
   return p.adapter;
 }
 
+/**
+ * Mirror of the web-handler resolver. RunController stuffs the AppSettings
+ * humanize block into `ctx.vars.__hermes_humanize__` at run start; per-step
+ * overrides come straight from `step.params` and are layered on top.
+ */
+function humanizeSettings(ctx: RunContext): {
+  mouseSpeedPxPerSec: number;
+  typeDelayMs: number;
+  mouseMinSteps: number;
+  mouseMaxSteps: number;
+} {
+  const raw = (ctx.vars['__hermes_humanize__'] as Record<string, unknown> | undefined) ?? {};
+  return {
+    mouseSpeedPxPerSec: Number(raw['mouseSpeedPxPerSec'] ?? 800),
+    typeDelayMs: Number(raw['typeDelayMs'] ?? 50),
+    // Defaults target ~6ms per waypoint (~166 fps), the cadence the
+    // Swift loop can actually hit with CGEvent re-use + delta-stamped
+    // post + .userInteractive QoS. See macos.ts for why finer was
+    // worse, and Input.swift for the four optimisations.
+    mouseMinSteps: Number(raw['mouseMinSteps'] ?? 16),
+    mouseMaxSteps: Number(raw['mouseMaxSteps'] ?? 1200),
+  };
+}
+
 function makeHandler<T extends StepType>(
   type: T,
   execute: (step: Step, ctx: RunContext) => Promise<StepResult<Record<string, unknown>>>,
@@ -63,9 +87,23 @@ export const desktopStepHandlers: StepHandler[] = [
     const pt = coordsFromTarget(step.target);
     const button = step.params?.['button'] as 'left' | 'right' | 'middle' | undefined;
     const clicks = step.params?.['clickCount'] as 1 | 2 | 3 | undefined;
+    const speedOverride = step.params?.['mouseSpeedPxPerSec'] as number | undefined;
+    const instant = step.params?.['instant'] === true;
+    // Set by the flow preprocessor when a preceding `wait` was absorbed
+    // into this click's pre-move. Forces the move to take exactly this
+    // many ms so the click lands at the recorded rhythm.
+    const moveDurationOverride = step.params?.['moveDurationMs'] as number | undefined;
+    const h = humanizeSettings(ctx);
     await adapter(ctx).click(pt, {
+      speedPxPerSec: speedOverride ?? h.mouseSpeedPxPerSec,
+      minSteps: h.mouseMinSteps,
+      maxSteps: h.mouseMaxSteps,
+      ...(instant ? { instant: true } : {}),
       ...(button ? { button } : {}),
       ...(clicks ? { clicks } : {}),
+      ...(moveDurationOverride !== undefined
+        ? { durationMsOverride: moveDurationOverride }
+        : {}),
     });
     return { outcome: 'completed' };
   }),
@@ -73,10 +111,13 @@ export const desktopStepHandlers: StepHandler[] = [
   makeHandler('type', async (step, ctx) => {
     const text = String(step.params?.['text'] ?? '');
     const clearFirst = step.params?.['clearFirst'] === true;
-    const intervalMs = step.params?.['intervalMs'] as number | undefined;
+    const intervalOverride = (step.params?.['intervalMs'] ?? step.params?.['delayMs']) as
+      | number
+      | undefined;
+    const intervalMs = intervalOverride ?? humanizeSettings(ctx).typeDelayMs;
     await adapter(ctx).type(text, {
       clearFirst,
-      ...(intervalMs !== undefined ? { intervalMs } : {}),
+      intervalMs,
     });
     return { outcome: 'completed' };
   }),
@@ -90,15 +131,89 @@ export const desktopStepHandlers: StepHandler[] = [
   }),
 
   makeHandler('wait_for', async (step, ctx) => {
-    const sel = selectorFromTarget(step.target);
-    const timeoutMs = (step.timeoutMs ?? step.params?.['timeoutMs']) as number | undefined;
-    const handle = await adapter(ctx).findElement(sel, timeoutMs ? { timeoutMs } : undefined);
-    if (!handle) {
-      throw Object.assign(new Error('desktop wait_for: element not found'), {
-        class: 'selector_not_found',
-      });
+    const params = step.params ?? {};
+    const explicitKind = params['kind'] as string | undefined;
+    const kind = explicitKind ?? 'desktop.element';
+    const a = adapter(ctx);
+    const timeoutMs = Math.max(
+      0,
+      Number(params['timeoutMs'] ?? step.timeoutMs ?? 10_000),
+    );
+    const intervalMs = Math.max(50, Number(params['pollIntervalMs'] ?? 100));
+
+    if (kind === 'desktop.element') {
+      const sel = selectorFromTarget(step.target);
+      const handle = await a.findElement(sel, { timeoutMs });
+      if (!handle) {
+        throw Object.assign(new Error('desktop wait_for: element not found'), {
+          class: 'selector_not_found',
+        });
+      }
+      return { outcome: 'completed' };
     }
-    return { outcome: 'completed' };
+
+    if (kind === 'desktop.app_focus') {
+      const bundleId = String(params['appBundleId'] ?? '');
+      if (!bundleId) {
+        throw new Error('wait_for kind=desktop.app_focus requires params.appBundleId');
+      }
+      await a.waitForState(
+        async () => {
+          const app = await a.getFocusedApp();
+          return app?.bundleId === bundleId;
+        },
+        { timeoutMs, intervalMs },
+      );
+      return { outcome: 'completed' };
+    }
+
+    if (kind === 'desktop.window_title') {
+      const pattern = String(params['titlePattern'] ?? '');
+      if (!pattern) {
+        throw new Error('wait_for kind=desktop.window_title requires params.titlePattern');
+      }
+      const re = new RegExp(pattern);
+      await a.waitForState(
+        async () => {
+          const app = await a.getFocusedApp();
+          return Boolean(app?.title && re.test(app.title));
+        },
+        { timeoutMs, intervalMs },
+      );
+      return { outcome: 'completed' };
+    }
+
+    if (kind === 'desktop.screen_stable') {
+      // Hold "no change" for `stableMs` consecutive ms while polling
+      // screenshots. The comparison is exact-buffer equality — adequate for
+      // macOS ScreenCaptureKit / CGWindowListCreateImage output where a
+      // truly idle screen yields byte-identical PNGs frame-over-frame, and
+      // any animation/cursor blink reliably perturbs the bytes.
+      const stableMs = Math.max(100, Number(params['stableMs'] ?? 500));
+      const region = params['region'] as
+        | { x: number; y: number; w: number; h: number }
+        | undefined;
+      const start = Date.now();
+      let lastChange = start;
+      let prev: Buffer | null = null;
+      while (Date.now() - start < timeoutMs) {
+        const shot = await a.screenshot(region ? { region } : undefined);
+        if (prev) {
+          if (!prev.equals(shot)) lastChange = Date.now();
+          else if (Date.now() - lastChange >= stableMs) {
+            return { outcome: 'completed' };
+          }
+        }
+        prev = shot;
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+      throw Object.assign(
+        new Error(`wait_for screen_stable: not stable within ${timeoutMs}ms`),
+        { class: 'timeout' },
+      );
+    }
+
+    throw new Error(`Unsupported desktop wait_for kind: ${kind}`);
   }),
 ];
 

@@ -21,6 +21,27 @@ function provider(ctx: RunContext): WebProvider {
   return p;
 }
 
+/**
+ * Resolve humanization settings for the current run, falling back through
+ * step.params → ctx.vars.__hermes_humanize__ (set by RunController from
+ * AppSettings) → hard-coded defaults. Keeping this in one place means a
+ * UI-level slider only has to write the vars entry once at run start.
+ */
+function humanizeSettings(ctx: RunContext): {
+  mouseSpeedPxPerSec: number;
+  typeDelayMs: number;
+  mouseMinSteps: number;
+  mouseMaxSteps: number;
+} {
+  const raw = (ctx.vars['__hermes_humanize__'] as Record<string, unknown> | undefined) ?? {};
+  return {
+    mouseSpeedPxPerSec: Number(raw['mouseSpeedPxPerSec'] ?? 800),
+    typeDelayMs: Number(raw['typeDelayMs'] ?? 50),
+    mouseMinSteps: Number(raw['mouseMinSteps'] ?? 8),
+    mouseMaxSteps: Number(raw['mouseMaxSteps'] ?? 60),
+  };
+}
+
 function makeHandler<T extends StepType>(
   type: T,
   execute: (step: Step, ctx: RunContext) => Promise<StepResult<Record<string, unknown>>>,
@@ -45,9 +66,24 @@ export const webStepHandlers: StepHandler[] = [
     if (!step.target) throw new Error('click requires target');
     const button = step.params?.['button'] as 'left' | 'right' | 'middle' | undefined;
     const clickCount = step.params?.['clickCount'] as number | undefined;
-    const args: { button?: 'left' | 'right' | 'middle'; clickCount?: number } = {};
+    const speedOverride = step.params?.['mouseSpeedPxPerSec'] as number | undefined;
+    const instant = step.params?.['instant'] === true;
+    const h = humanizeSettings(ctx);
+    const args: {
+      button?: 'left' | 'right' | 'middle';
+      clickCount?: number;
+      speedPxPerSec?: number;
+      minSteps?: number;
+      maxSteps?: number;
+      instant?: boolean;
+    } = {
+      speedPxPerSec: speedOverride ?? h.mouseSpeedPxPerSec,
+      minSteps: h.mouseMinSteps,
+      maxSteps: h.mouseMaxSteps,
+    };
     if (button !== undefined) args.button = button;
     if (clickCount !== undefined) args.clickCount = clickCount;
+    if (instant) args.instant = true;
     await provider(ctx).click(step.target, args);
     return { outcome: 'completed' };
   }),
@@ -56,9 +92,9 @@ export const webStepHandlers: StepHandler[] = [
     if (!step.target) throw new Error('type requires target');
     const text = String(step.params?.['text'] ?? '');
     const clearFirst = step.params?.['clearFirst'] === true;
-    const delayMs = step.params?.['delayMs'] as number | undefined;
+    const delayOverride = step.params?.['delayMs'] as number | undefined;
     const args: { clearFirst?: boolean; delayMs?: number } = { clearFirst };
-    if (delayMs !== undefined) args.delayMs = delayMs;
+    args.delayMs = delayOverride ?? humanizeSettings(ctx).typeDelayMs;
     await provider(ctx).typeInto(step.target, text, args);
     return { outcome: 'completed' };
   }),
@@ -79,24 +115,42 @@ export const webStepHandlers: StepHandler[] = [
   }),
 
   makeHandler('wait_for', async (step, ctx) => {
-    const url = step.params?.['url'] as string | undefined;
-    const state = step.params?.['state'] as
+    const params = step.params ?? {};
+    const kind = params['kind'] as string | undefined;
+    const url = params['url'] as string | undefined;
+    const state = params['state'] as
       | 'attached'
       | 'visible'
       | 'hidden'
       | 'detached'
       | undefined;
-    const timeoutMs = (step.timeoutMs ?? step.params?.['timeoutMs']) as number | undefined;
+    const timeoutMs = (step.timeoutMs ?? params['timeoutMs']) as number | undefined;
+
+    // `kind=web.load` waits for the document load state — does not need a
+    // target. The other web kinds reuse the existing `waitFor` shape.
+    if (kind === 'web.load') {
+      const loadState = (params['state'] as 'load' | 'domcontentloaded' | 'networkidle' | undefined) ??
+        'load';
+      await provider(ctx).waitForLoadState(loadState, timeoutMs ?? 10_000);
+      return { outcome: 'completed' };
+    }
+
     const args: {
       target?: typeof step.target;
       url?: string;
       timeoutMs?: number;
       state?: 'attached' | 'visible' | 'hidden' | 'detached';
     } = {};
-    if (step.target) args.target = step.target;
-    if (url) args.url = url;
+    if (kind === 'web.url' || (!kind && url)) {
+      if (!url) throw new Error('wait_for kind=web.url requires params.url');
+      args.url = url;
+    } else {
+      // kind=web.element OR legacy (kind absent + target present)
+      if (!step.target) throw new Error('wait_for kind=web.element requires target');
+      args.target = step.target;
+      if (state !== undefined) args.state = state;
+    }
     if (timeoutMs !== undefined) args.timeoutMs = timeoutMs;
-    if (state !== undefined) args.state = state;
     await provider(ctx).waitFor(args);
     return { outcome: 'completed' };
   }),

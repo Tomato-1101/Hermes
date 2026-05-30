@@ -63,6 +63,9 @@ type Events = {
   step: RecorderEvent;
 };
 
+/** Minimum gap between two user events to materialise as a recorded `wait`. */
+const DEFAULT_MIN_RECORDED_WAIT_MS = 200;
+
 export class WebRecorder {
   private provider: WebProvider | null = null;
   private context: BrowserContext | null = null;
@@ -70,6 +73,11 @@ export class WebRecorder {
   private attached = false;
   private readonly emitter: Emitter<Events> = mitt<Events>();
   private lastUrl: string | null = null;
+  // Inter-event timing — captures the human's wait between actions so the
+  // recorded flow replays at the rhythm the user actually performed it.
+  private lastEmitTs = 0;
+  private recordWaits = true;
+  private minRecordedWaitMs = DEFAULT_MIN_RECORDED_WAIT_MS;
 
   async attach(provider: WebProvider): Promise<void> {
     if (this.attached) return;
@@ -107,10 +115,27 @@ export class WebRecorder {
 
   start(): void {
     this.running = true;
+    this.lastEmitTs = 0;
   }
 
   stop(): void {
     this.running = false;
+    this.lastEmitTs = 0;
+  }
+
+  /**
+   * Toggle the auto-insertion of `wait` steps between user events.
+   * When on, gaps ≥ `minRecordedWaitMs` show up in the IR; when off, the
+   * recorder emits only the action steps and the editor must add waits by
+   * hand. The setting is a runtime toggle so the Editor can flip it without
+   * restarting the recorder.
+   */
+  setRecordWaits(enabled: boolean): void {
+    this.recordWaits = enabled;
+  }
+
+  setMinRecordedWaitMs(ms: number): void {
+    this.minRecordedWaitMs = Math.max(0, ms);
   }
 
   isRunning(): boolean {
@@ -147,6 +172,26 @@ export class WebRecorder {
   }
 
   private emitStep(step: Step, raw: RecorderPayload): void {
+    const now = raw.ts ?? Date.now();
+    if (this.recordWaits && this.lastEmitTs > 0) {
+      const diff = now - this.lastEmitTs;
+      if (diff >= this.minRecordedWaitMs) {
+        const waitStep: Step = {
+          id: ulid(),
+          type: 'wait',
+          enabled: true,
+          label: `${diff}ms 待機（録画）`,
+          params: { ms: diff },
+          meta: {
+            recordedAt: new Date(this.lastEmitTs).toISOString(),
+            recordedBy: 'web-recorder',
+            origin: 'recorded',
+          },
+        };
+        this.emitter.emit('step', { step: waitStep, raw });
+      }
+    }
+    this.lastEmitTs = now;
     this.emitter.emit('step', { step, raw });
   }
 

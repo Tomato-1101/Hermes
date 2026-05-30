@@ -7,7 +7,7 @@ import {
   type StepHandler,
 } from '../src/index.js';
 
-function makeFlow(steps: Step[]): Flow {
+function makeFlow(steps: Step[], opts?: { waitBetweenStepsMs?: number }): Flow {
   const now = new Date().toISOString();
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -22,7 +22,7 @@ function makeFlow(steps: Step[]): Flow {
       timeoutMs: 5000,
       retry: { attempts: 1 },
       screenshotOnError: false,
-      waitBetweenStepsMs: 0,
+      waitBetweenStepsMs: opts?.waitBetweenStepsMs ?? 0,
     },
     steps,
     metadata: { origin: 'recorded', targets: ['web'], requiredPermissions: [] },
@@ -364,5 +364,97 @@ describe('StepExecutor', () => {
     );
     expect(outcome).toBe('success');
     expect(caught).toBe(true);
+  });
+
+  it('inserts waitBetweenStepsMs sleep between executed steps but not before first or after last', async () => {
+    const registry = new HandlerRegistry();
+    const stamps: number[] = [];
+    registry.register({
+      type: 'click',
+      execute: async () => {
+        stamps.push(Date.now());
+        return { outcome: 'completed' };
+      },
+    });
+    const exec = new StepExecutor({ registry });
+    const t0 = Date.now();
+    await exec.run(
+      makeFlow(
+        [
+          { id: newId(), type: 'click', enabled: true },
+          { id: newId(), type: 'click', enabled: true },
+          { id: newId(), type: 'click', enabled: true },
+        ],
+        { waitBetweenStepsMs: 60 },
+      ),
+    );
+    expect(stamps).toHaveLength(3);
+    // first step runs without prefix sleep
+    expect(stamps[0]! - t0).toBeLessThan(50);
+    // between steps: at least 60ms each gap (allow timer jitter)
+    expect(stamps[1]! - stamps[0]!).toBeGreaterThanOrEqual(50);
+    expect(stamps[2]! - stamps[1]!).toBeGreaterThanOrEqual(50);
+  });
+
+  it('wait_for kind=time sleeps for params.ms (or timeoutMs)', async () => {
+    const registry = new HandlerRegistry();
+    const exec = new StepExecutor({ registry });
+    const t0 = Date.now();
+    const outcome = await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'wait_for',
+          enabled: true,
+          params: { kind: 'time', ms: 80 },
+        },
+      ]),
+    );
+    expect(outcome).toBe('success');
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(60);
+  });
+
+  it('wait_for kind=expr polls until the expression becomes truthy', async () => {
+    const registry = new HandlerRegistry();
+    const exec = new StepExecutor({ registry });
+    const outcome = await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'wait_for',
+          enabled: true,
+          params: {
+            kind: 'expr',
+            expr: 'var.ready == true',
+            timeoutMs: 200,
+            pollIntervalMs: 20,
+          },
+        },
+      ]),
+      { inputs: { ready: true } },
+    );
+    expect(outcome).toBe('success');
+  });
+
+  it('wait_for kind=expr times out when expression stays false', async () => {
+    const registry = new HandlerRegistry();
+    const exec = new StepExecutor({ registry });
+    const outcome = await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'wait_for',
+          enabled: true,
+          params: {
+            kind: 'expr',
+            expr: 'var.ready == true',
+            timeoutMs: 120,
+            pollIntervalMs: 20,
+          },
+        },
+      ]),
+      { inputs: { ready: false } },
+    );
+    expect(outcome).toBe('failure');
   });
 });

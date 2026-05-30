@@ -9,12 +9,13 @@
  * Heavier responsibilities (engine wiring, recorder boot, sidecar lifecycle)
  * arrive in later phases.
  */
-import { BrowserWindow, app, ipcMain, shell, systemPreferences } from 'electron';
-import { join } from 'node:path';
+import { BrowserWindow, app, dialog, globalShortcut, ipcMain, shell, systemPreferences } from 'electron';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { IpcChannels, IpcContract, type PermissionName } from '../shared/ipc.js';
 import { disposeSidecar, pingSidecar } from './sidecar.js';
 import { RunController } from './run-controller.js';
+import { defaultChromeUserDataDir } from './chrome-process.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -46,6 +47,17 @@ function createMainWindow(): void {
   } else {
     void mainWindow.loadFile(join(__dirname, '..', 'renderer', 'index.html'));
   }
+
+  // Tell the renderer what platform it's running on so CSS can offset the
+  // left pane header by ~80px to clear macOS's traffic-light buttons (we
+  // run with titleBarStyle: 'hiddenInset', so the dots overlap the header
+  // text otherwise). did-finish-load fires after React has mounted, so
+  // body always exists by the time this runs.
+  mainWindow.webContents.on('did-finish-load', () => {
+    void mainWindow?.webContents.executeJavaScript(
+      `document.body.classList.add('platform-${process.platform}')`,
+    );
+  });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -124,6 +136,51 @@ function registerIpcHandlers(): void {
     return { ok: true as const };
   });
 
+  ipcMain.handle(IpcChannels.flowDelete, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowDelete].args.parse(raw);
+    await controller.deleteFlow(args.id);
+    return { deleted: true };
+  });
+
+  ipcMain.handle(IpcChannels.flowDuplicate, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowDuplicate].args.parse(raw);
+    const flow = await controller.duplicateFlow(args.id, args.name);
+    return { flow };
+  });
+
+  ipcMain.handle(IpcChannels.flowRename, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.flowRename].args.parse(raw);
+    const flow = await controller.renameFlow(args.id, args.name);
+    return { flow };
+  });
+
+  ipcMain.handle(IpcChannels.settingsGet, async () => {
+    const settings = await controller.getSettings();
+    return { settings };
+  });
+
+  ipcMain.handle(IpcChannels.settingsSet, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.settingsSet].args.parse(raw);
+    await controller.setSettings(args.settings);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.settingsPickChromeProfile, async () => {
+    if (!mainWindow) return { picked: false };
+    const defaultPath = defaultChromeUserDataDir() ?? undefined;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Chrome プロファイルフォルダを選択',
+      message: '"Default" または "Profile 1" などのフォルダを選んでください。',
+      properties: ['openDirectory'],
+      ...(defaultPath ? { defaultPath } : {}),
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { picked: false };
+    }
+    const picked = result.filePaths[0]!;
+    return { picked: true, path: picked, name: basename(picked) };
+  });
+
   ipcMain.handle(IpcChannels.recorderStart, async (_event, raw) => {
     const args = IpcContract[IpcChannels.recorderStart].args.parse(raw);
     await controller.startRecording(args.flowId, args.startUrl, args.layer);
@@ -132,6 +189,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IpcChannels.recorderStop, async () => {
     await controller.stopRecording();
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.recorderSetRecordWaits, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.recorderSetRecordWaits].args.parse(raw);
+    controller.setRecordWaits(args.enabled);
     return { ok: true as const };
   });
 
@@ -193,9 +256,30 @@ function settingsDeepLink(pane: PermissionName): string {
   }
 }
 
+function registerStopHotkey(): void {
+  // System-wide kill switch: during desktop replay Hermes is in the
+  // background while the cursor drives ANOTHER app, so a renderer-side
+  // keyboard listener can't catch this. globalShortcut survives focus
+  // loss. Cmd+Shift+Esc is unclaimed on macOS (Cmd+Opt+Esc is Force
+  // Quit; Cmd+Shift+Esc is free).
+  const accel = 'CommandOrControl+Shift+Escape';
+  const ok = globalShortcut.register(accel, () => {
+    void controller.stopRun().catch(() => undefined);
+    mainWindow?.webContents.send(IpcChannels.eventPush, {
+      type: 'log',
+      level: 'warn',
+      message: '⌘⇧Esc で再生を停止しました',
+    });
+  });
+  if (!ok) {
+    console.warn(`[hermes] failed to register global stop hotkey: ${accel}`);
+  }
+}
+
 app.whenReady().then(() => {
   registerIpcHandlers();
   createMainWindow();
+  registerStopHotkey();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -204,6 +288,10 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (!isMac) app.quit();
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on('before-quit', async () => {

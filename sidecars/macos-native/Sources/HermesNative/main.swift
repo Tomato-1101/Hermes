@@ -163,6 +163,31 @@ let handlers: [String: Handler] = [
         return mainScreenSize()
     },
 
+    "screen.capture": { params in
+        let p = paramsObject(params)
+        var region: CGRect? = nil
+        if let r = p?["region"], case let .object(rdict) = r,
+           let x = (rdict["x"]).flatMap({ doubleValue($0) }),
+           let y = (rdict["y"]).flatMap({ doubleValue($0) }),
+           let w = (rdict["w"]).flatMap({ doubleValue($0) }),
+           let h = (rdict["h"]).flatMap({ doubleValue($0) }) {
+            region = CGRect(x: x, y: y, width: w, height: h)
+        }
+        do {
+            return try captureScreen(region: region)
+        } catch ScreenError.captureFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32012,
+                message: "Screen capture failed (Screen Recording permission may be missing)"
+            )
+        } catch {
+            throw RpcDispatchError.applicationError(
+                code: -32603,
+                message: "screen.capture failed: \(error)"
+            )
+        }
+    },
+
     "mouse.click": { params in
         let (x, y) = try requireXY(params)
         let p = paramsObject(params)
@@ -183,6 +208,32 @@ let handlers: [String: Handler] = [
             return .object(["ok": .bool(true)])
         } catch {
             throw RpcDispatchError.applicationError(code: -32603, message: "move failed: \(error)")
+        }
+    },
+
+    "mouse.position": { _ in
+        let p = currentMousePosition()
+        return .object([
+            "x": .double(Double(p.x)),
+            "y": .double(Double(p.y)),
+        ])
+    },
+
+    "mouse.move_smooth": { params in
+        let p = paramsObject(params)
+        guard let toX = (p?["toX"]).flatMap({ doubleValue($0) }),
+              let toY = (p?["toY"]).flatMap({ doubleValue($0) }) else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing toX/toY")
+        }
+        let durationMs = (p?["durationMs"]).flatMap { intValue($0) } ?? 200
+        let steps = (p?["steps"]).flatMap { intValue($0) } ?? 16
+        do {
+            // postMouseMoveSmooth returns a measurement dict (actualFps,
+            // maxSlipMs, steps, durationMs) so the TS adapter can detect
+            // when timing is slipping (system under load, QoS demotion).
+            return try postMouseMoveSmooth(toX: toX, toY: toY, durationMs: durationMs, steps: steps)
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "move_smooth failed: \(error)")
         }
     },
 

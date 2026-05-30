@@ -16,7 +16,21 @@ import {
   newId,
   type Flow as IRFlow,
   type FlowPatch,
+  type WaitForKind,
 } from '@hermes/ir';
+
+/**
+ * Categories of step the inline-insert popup can spawn. `wait` is a
+ * time-only block; the rest of the wait_for kinds collapse onto the
+ * `wait_for` step type. Structural kinds (if/loop/try) follow the
+ * existing factories.
+ */
+export type InsertKind =
+  | 'wait'
+  | { type: 'wait_for'; kind: WaitForKind }
+  | 'if'
+  | 'loop'
+  | 'try';
 
 export type FlowSummary = {
   id: string;
@@ -61,6 +75,36 @@ export type LogEntry = {
   message: string;
 };
 
+export type BrowserProfileMode =
+  | 'hermes-profile'
+  | 'system-chrome'
+  | 'system-chrome-import';
+
+export type AppSettings = {
+  browser: {
+    mode: BrowserProfileMode;
+    systemChromePath?: string;
+    systemChromeProfileName?: string;
+    channel?: 'chrome' | 'chromium';
+  };
+  humanize: {
+    mouseSpeedPxPerSec: number;
+    typeDelayMs: number;
+    mouseMinSteps: number;
+    mouseMaxSteps: number;
+  };
+};
+
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  browser: { mode: 'system-chrome', channel: 'chrome' },
+  humanize: {
+    mouseSpeedPxPerSec: 800,
+    typeDelayMs: 50,
+    mouseMinSteps: 8,
+    mouseMaxSteps: 60,
+  },
+};
+
 type State = {
   flows: FlowSummary[];
   currentFlow: Flow | null;
@@ -78,6 +122,12 @@ type State = {
   createFlow: (name: string) => Promise<Flow>;
   openFlow: (id: string) => Promise<void>;
   saveFlow: () => Promise<void>;
+  deleteFlow: (id: string) => Promise<void>;
+  duplicateFlow: (id: string, newName: string) => Promise<Flow>;
+  renameFlow: (id: string, newName: string) => Promise<void>;
+  appSettings: AppSettings;
+  loadAppSettings: () => Promise<void>;
+  setAppSettings: (next: AppSettings) => Promise<void>;
   selectStep: (id: string | null) => void;
   appendStep: (step: Step) => void;
   /** Insert a structural step (if/loop/try) with empty children at the top level. */
@@ -87,9 +137,27 @@ type State = {
   /** Insert a no-op step into a named branch (e.g. "catch"/"finally" of a try,
    *  or "then" — the first branch — of an if). The branch is created if absent. */
   addBranchStep: (parentId: string, branchName: string) => void;
+  /**
+   * Insert a step before the given step id (anywhere in the tree). When
+   * `beforeStepId` is null the new step is appended at the top level.
+   * Used by the timeline's hover-handle popup to inline new wait/wait_for
+   * blocks between recorded actions.
+   */
+  insertStepAt: (beforeStepId: string | null, kind: InsertKind) => void;
+  /** Append a wait or wait_for at the very end of the top-level steps. */
+  appendQuickStep: (kind: InsertKind) => void;
+  /**
+   * Convert a wait ↔ wait_for step in place. Preserves whatever can be
+   * reused (ms ↔ timeoutMs) and fills the rest with sensible defaults
+   * for the new kind.
+   */
+  convertWaitKind: (stepId: string, kind: WaitForKind) => void;
   updateStep: (id: string, patch: Partial<Step>) => void;
   removeStep: (id: string) => void;
   moveStep: (id: string, dir: -1 | 1) => void;
+  /** UI toggle: capture human think-time as `wait` steps during recording. */
+  recordWaits: boolean;
+  setRecordWaits: (enabled: boolean) => void;
   undo: () => void;
   redo: () => void;
   canUndo: () => boolean;
@@ -202,6 +270,122 @@ const insertBranchStepInTree = (
     return next;
   });
 
+/** Walk the tree (children + branches) and return the first step with the
+ *  given id, or null. Used by mutators that need to read existing params
+ *  before patching. */
+const findStepInTree = (steps: Step[], id: string): Step | null => {
+  for (const s of steps) {
+    if (s.id === id) return s;
+    if (s.children) {
+      const c = findStepInTree(s.children, id);
+      if (c) return c;
+    }
+    if (s.branches) {
+      for (const b of s.branches) {
+        const c = findStepInTree(b.steps, id);
+        if (c) return c;
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * Insert `newStep` immediately before the step identified by `beforeStepId`
+ * anywhere in the tree. When `beforeStepId` is null, the step is appended
+ * at the top level (the renderer treats that as "add to end"). Walks
+ * children and branches so the insertion works inside if/loop/try bodies.
+ */
+const insertBeforeInTree = (
+  steps: Step[],
+  beforeStepId: string | null,
+  newStep: Step,
+): Step[] => {
+  if (beforeStepId === null) return [...steps, newStep];
+
+  const idx = steps.findIndex((s) => s.id === beforeStepId);
+  if (idx >= 0) {
+    const out = [...steps];
+    out.splice(idx, 0, newStep);
+    return out;
+  }
+
+  return steps.map((s) => {
+    const next: Step = { ...s };
+    if (s.children) next.children = insertBeforeInTree(s.children, beforeStepId, newStep);
+    if (s.branches) {
+      next.branches = s.branches.map((b) => ({
+        ...b,
+        steps: insertBeforeInTree(b.steps, beforeStepId, newStep),
+      }));
+    }
+    return next;
+  });
+};
+
+/** Default params for each wait_for kind. Kept in one place so the
+ *  inline-insert popup and the Inspector's kind switcher emit the same
+ *  shape regardless of how the user got there. */
+const defaultsForWaitForKind = (
+  kind: WaitForKind,
+  carry?: Record<string, unknown>,
+): Record<string, unknown> => {
+  const timeoutMs = Number(carry?.['timeoutMs'] ?? 10_000);
+  switch (kind) {
+    case 'time':
+      // Falls through to the `wait` step elsewhere, but if asked for as
+      // a wait_for kind we still emit a usable params shape.
+      return { kind, ms: Number(carry?.['ms'] ?? carry?.['timeoutMs'] ?? 500) };
+    case 'web.load':
+      return { kind, state: String(carry?.['state'] ?? 'load'), timeoutMs };
+    case 'web.element':
+      return { kind, state: String(carry?.['state'] ?? 'visible'), timeoutMs };
+    case 'web.url':
+      return { kind, url: String(carry?.['url'] ?? ''), timeoutMs };
+    case 'desktop.element':
+      return { kind, timeoutMs };
+    case 'desktop.app_focus':
+      return { kind, appBundleId: String(carry?.['appBundleId'] ?? ''), timeoutMs };
+    case 'desktop.window_title':
+      return { kind, titlePattern: String(carry?.['titlePattern'] ?? ''), timeoutMs };
+    case 'desktop.screen_stable':
+      return {
+        kind,
+        stableMs: Number(carry?.['stableMs'] ?? 800),
+        pollIntervalMs: Number(carry?.['pollIntervalMs'] ?? 200),
+        timeoutMs,
+      };
+    case 'expr':
+      return {
+        kind,
+        expr: String(carry?.['expr'] ?? ''),
+        timeoutMs,
+        pollIntervalMs: Number(carry?.['pollIntervalMs'] ?? 100),
+      };
+  }
+};
+
+const newWaitStep = (ms = 500): Step => ({
+  id: newId(),
+  type: 'wait',
+  enabled: true,
+  params: { ms },
+});
+
+const newWaitForStep = (kind: WaitForKind): Step => ({
+  id: newId(),
+  type: 'wait_for',
+  enabled: true,
+  params: defaultsForWaitForKind(kind),
+});
+
+/** Build any inline-insert step kind into a concrete Step. */
+const buildStepFromKind = (kind: InsertKind): Step => {
+  if (kind === 'wait') return newWaitStep();
+  if (kind === 'if' || kind === 'loop' || kind === 'try') return newStructuralStep(kind);
+  return newWaitForStep(kind.kind);
+};
+
 /** Build an empty structural step. Branches/children mirror what the engine expects. */
 const newStructuralStep = (kind: 'if' | 'loop' | 'try'): Step => {
   const id = newId();
@@ -258,6 +442,8 @@ export const useStore = create<State>((set, get) => {
     log: [],
     undoStack: [],
     redoStack: [],
+    recordWaits: true,
+    appSettings: DEFAULT_APP_SETTINGS,
 
     async loadFlows() {
       try {
@@ -329,6 +515,90 @@ export const useStore = create<State>((set, get) => {
       }
     },
 
+    async deleteFlow(id: string) {
+      try {
+        await window.hermes.flowDelete(id);
+        const current = get().currentFlow;
+        if (current?.id === id) {
+          // The open flow just got nuked; clear it so the editor doesn't
+          // keep referencing a vanished disk path.
+          set({ currentFlow: null, selectedStepId: null, dirty: false, undoStack: [], redoStack: [] });
+        }
+        await get().loadFlows();
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `削除に失敗: ${(e as Error).message}`,
+        });
+        throw e;
+      }
+    },
+
+    async duplicateFlow(id: string, newName: string) {
+      try {
+        const { flow } = (await window.hermes.flowDuplicate(id, newName)) as { flow: Flow };
+        await get().loadFlows();
+        return flow;
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `複製に失敗: ${(e as Error).message}`,
+        });
+        throw e;
+      }
+    },
+
+    async renameFlow(id: string, newName: string) {
+      try {
+        const { flow } = (await window.hermes.flowRename(id, newName)) as { flow: Flow };
+        // If the renamed flow is currently open, keep the editor's copy in sync.
+        const current = get().currentFlow;
+        if (current?.id === id) {
+          set({ currentFlow: { ...current, name: flow.name, updatedAt: flow.updatedAt } });
+        }
+        await get().loadFlows();
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `名前変更に失敗: ${(e as Error).message}`,
+        });
+        throw e;
+      }
+    },
+
+    async loadAppSettings() {
+      try {
+        const { settings } = (await window.hermes.settingsGet()) as { settings: AppSettings };
+        set({ appSettings: settings });
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `アプリ設定の読み込みに失敗: ${(e as Error).message}`,
+        });
+      }
+    },
+
+    async setAppSettings(next: AppSettings) {
+      // Update the local cache eagerly so the form feels instant; if the
+      // round-trip fails we surface the error in the log but leave the
+      // optimistic value in place — the next read will reconcile.
+      set({ appSettings: next });
+      try {
+        await window.hermes.settingsSet(next);
+      } catch (e) {
+        get().appendLog({
+          ts: Date.now(),
+          level: 'error',
+          message: `アプリ設定の保存に失敗: ${(e as Error).message}`,
+        });
+        throw e;
+      }
+    },
+
     selectStep(id: string | null) {
       set({ selectedStepId: id });
     },
@@ -348,6 +618,62 @@ export const useStore = create<State>((set, get) => {
       const next = { ...flow, steps: [...flow.steps, step] };
       recordEdit(flow, next);
       set({ currentFlow: next, dirty: true, selectedStepId: step.id });
+    },
+
+    insertStepAt(beforeStepId, kind) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const newStep = buildStepFromKind(kind);
+      const steps = insertBeforeInTree(flow.steps, beforeStepId, newStep);
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true, selectedStepId: newStep.id });
+    },
+
+    appendQuickStep(kind) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      const newStep = buildStepFromKind(kind);
+      const next = { ...flow, steps: [...flow.steps, newStep] };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true, selectedStepId: newStep.id });
+    },
+
+    convertWaitKind(stepId, targetKind) {
+      const flow = get().currentFlow;
+      if (!flow) return;
+      // Pull the current step out so we can carry the existing ms /
+      // timeoutMs into the new shape — preserves the user's intent when
+      // they flip "1500ms wait" into "wait for page load (1500ms timeout)".
+      const current = findStepInTree(flow.steps, stepId);
+      if (!current) return;
+      const carry = current.params ?? {};
+
+      let patch: Partial<Step>;
+      if (targetKind === 'time') {
+        const ms = Number(carry['ms'] ?? carry['timeoutMs'] ?? 500);
+        patch = { type: 'wait', params: { ms } };
+      } else {
+        patch = {
+          type: 'wait_for',
+          params: defaultsForWaitForKind(targetKind, carry),
+        };
+      }
+
+      const steps = updateInTree(flow.steps, stepId, patch);
+      const next = { ...flow, steps };
+      recordEdit(flow, next);
+      set({ currentFlow: next, dirty: true });
+    },
+
+    setRecordWaits(enabled: boolean) {
+      set({ recordWaits: enabled });
+      // Fire-and-forget IPC so the main-process recorder picks it up;
+      // we don't await because the UI shouldn't block on a toggle.
+      void window.hermes.recorderSetRecordWaits(enabled).catch(() => {
+        // best-effort — if the recorder isn't running yet, the next
+        // start will pick up the renderer's value via a separate path.
+      });
     },
 
     addChildStep(parentId: string) {

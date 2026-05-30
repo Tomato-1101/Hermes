@@ -84,9 +84,32 @@ hr {
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+  /* Frameless window: the pane header acts as the drag handle since we
+     hide the native title bar (titleBarStyle: 'hiddenInset' on macOS). */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+/* Interactive children inside the header must opt out of the drag region,
+   otherwise clicks get swallowed and ::placeholder cursors won't focus. */
+.pane-header button,
+.pane-header input,
+.pane-header select,
+.pane-header textarea,
+.pane-header a,
+.pane-header .toolbar,
+.pane-header [role="button"] {
+  -webkit-app-region: no-drag;
 }
 .pane-header .toolbar { display: flex; gap: 6px; }
 .pane-header small { font-weight: 400; }
+
+/* macOS: traffic-light buttons (close/min/zoom) live at x≈18 with
+   hiddenInset, so the left pane header needs ~70-80px of left padding to
+   keep "フロー" from being eclipsed by them. The platform-darwin class is
+   injected by the main process at didFinishLoad. */
+body.platform-darwin .pane-left .pane-header {
+  padding-left: 80px;
+}
 
 .pane-body { padding: 14px; overflow: auto; flex: 1; }
 .pane-body.empty { display: flex; align-items: center; justify-content: center; }
@@ -192,6 +215,114 @@ hr {
   margin: 0 4px;
 }
 .small { font-size: 11px; }
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.toolbar-toggle input[type='checkbox'] { margin: 0; }
+
+/* Subtle indicator that the global stop hotkey is live. Renders next to
+   the ■ 停止 button only while a run is active. */
+.toolbar-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: 2px 6px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+.toolbar-hint kbd {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* Inline insert handle between timeline rows. Stays unobtrusive at rest
+   so the recorded sequence reads cleanly, and reveals on hover. */
+.step-divider {
+  list-style: none;
+  position: relative;
+  height: 6px;
+  margin: -2px 0;
+}
+.step-divider .divider-add {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.step-divider:hover .divider-add,
+.step-divider .divider-add:focus,
+.step-divider .divider-menu ~ .divider-add { opacity: 1; }
+.step-divider .divider-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.divider-menu {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translate(-50%, 4px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 50;
+  min-width: 220px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+.divider-menu button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+}
+.divider-menu button:hover { background: var(--bg-active); color: var(--accent); }
+.divider-section {
+  font-size: 10px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 8px 2px;
+}
+
+/* Wait / wait_for editor specifics */
+.wait-row { display: flex; align-items: center; gap: 6px; }
+.wait-row input[type='number'] { width: 90px; }
+.convert-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.convert-row button.small { padding: 2px 8px; }
 
 /* Prompt modal (replaces window.prompt blocked by Electron) */
 .modal-overlay {
@@ -227,6 +358,85 @@ hr {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Sidebar right-click context menu */
+.context-menu {
+  position: fixed;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 200;
+  min-width: 180px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+.context-menu button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.context-menu button:hover { background: var(--bg-active); color: var(--accent); }
+.context-menu button.danger { color: var(--err); }
+.context-menu button.danger:hover { background: rgba(255, 90, 90, 0.12); color: var(--err); }
+.context-menu-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* App settings panel in Inspector */
+.settings-panel .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.settings-panel .section-header h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.settings-row {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.settings-row > label.kv-key {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+.settings-row input[type='number'] {
+  width: 120px;
+  padding: 4px 6px;
+}
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.settings-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 /* Vault panel in Inspector */

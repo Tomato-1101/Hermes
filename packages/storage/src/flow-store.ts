@@ -11,7 +11,7 @@
  *       run-<runId>.jsonl.gz
  */
 
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assertValidFlow, type Flow } from '@hermes/ir';
 
@@ -67,5 +67,33 @@ export class FlowStore {
     const full = join(this.assetsDir(flowId), fileName);
     await writeFile(full, data);
     return `assets/${fileName}`;
+  }
+
+  /**
+   * Recursively delete the flow's directory. Idempotent — a missing
+   * directory is treated as success so callers don't have to special-case
+   * already-gone flows.
+   */
+  async deleteFlow(flowId: string): Promise<void> {
+    await rm(this.flowDir(flowId), { recursive: true, force: true });
+  }
+
+  /**
+   * Copy the IR of `srcFlowId` into a brand-new directory under `dstFlow.id`,
+   * preserving steps/defaults/etc. The new flow starts with an empty
+   * `browser-profile/` and `history/` — we explicitly do NOT copy cookies or
+   * run logs, since they would let one duplicated flow leak the original's
+   * session into a fresh-looking run.
+   */
+  async duplicateFlow(srcFlowId: string, dstFlow: Flow): Promise<Flow> {
+    const original = await this.readFlow(srcFlowId);
+    const copy: Flow = {
+      ...original,
+      id: dstFlow.id,
+      name: dstFlow.name,
+      metadata: { ...original.metadata, ...dstFlow.metadata },
+    };
+    await this.writeFlow(copy);
+    return copy;
   }
 }

@@ -60,6 +60,7 @@ export type DesktopRecorderEvents = {
 };
 
 const POLL_INTERVAL_MS = 150;
+const DEFAULT_MIN_RECORDED_WAIT_MS = 200;
 
 export class DesktopRecorder {
   private readonly client = getSidecarClient();
@@ -68,11 +69,17 @@ export class DesktopRecorder {
   private active = false;
   private polling = false;
   private lastSeq = 0;
+  // Inter-event timing — same idea as WebRecorder: capture the user's
+  // think-time as a `wait` step so replays match the recorded rhythm.
+  private lastEmitTsMs = 0;
+  private recordWaits = true;
+  private minRecordedWaitMs = DEFAULT_MIN_RECORDED_WAIT_MS;
 
   async start(): Promise<void> {
     if (this.active) return;
     await this.client.call('recording.start', null, 5000);
     this.active = true;
+    this.lastEmitTsMs = 0;
     this.pollTimer = setInterval(() => {
       // Guard against overlapping polls if the sidecar is slow.
       if (this.polling) return;
@@ -94,6 +101,15 @@ export class DesktopRecorder {
     // lose the last click.
     await this.pollOnce().catch(() => undefined);
     await this.client.call('recording.stop', null, 5000).catch(() => undefined);
+    this.lastEmitTsMs = 0;
+  }
+
+  setRecordWaits(enabled: boolean): void {
+    this.recordWaits = enabled;
+  }
+
+  setMinRecordedWaitMs(ms: number): void {
+    this.minRecordedWaitMs = Math.max(0, ms);
   }
 
   isRunning(): boolean {
@@ -125,7 +141,28 @@ export class DesktopRecorder {
       if (ev.seq <= this.lastSeq) continue;
       this.lastSeq = ev.seq;
       const step = this.toStep(ev);
-      if (step) this.emitter.emit('step', { step, raw: ev });
+      if (!step) continue;
+      const evMs = Math.round(ev.ts * 1000);
+      if (this.recordWaits && this.lastEmitTsMs > 0) {
+        const diff = evMs - this.lastEmitTsMs;
+        if (diff >= this.minRecordedWaitMs) {
+          const waitStep: Step = {
+            id: newId(),
+            type: 'wait',
+            enabled: true,
+            label: `${diff}ms 待機（録画）`,
+            params: { ms: diff },
+            meta: {
+              recordedAt: new Date(this.lastEmitTsMs).toISOString(),
+              recordedBy: 'desktop-recorder',
+              origin: 'recorded',
+            },
+          };
+          this.emitter.emit('step', { step: waitStep, raw: ev });
+        }
+      }
+      this.lastEmitTsMs = evMs;
+      this.emitter.emit('step', { step, raw: ev });
     }
   }
 

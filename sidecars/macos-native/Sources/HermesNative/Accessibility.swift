@@ -36,11 +36,31 @@ func listApps() -> [JSONValue] {
 
 func frontmostApp() -> JSONValue {
     guard let app = NSWorkspace.shared.frontmostApplication else { return .null }
-    return .object([
+    var dict: [String: JSONValue] = [
         "bundleId": .string(app.bundleIdentifier ?? ""),
         "name": .string(app.localizedName ?? ""),
         "pid": .int(Int(app.processIdentifier)),
-    ])
+    ]
+    if let title = focusedWindowTitle(forPid: app.processIdentifier) {
+        dict["windowTitle"] = .string(title)
+    }
+    return .object(dict)
+}
+
+/// Title of the currently-focused window of the given process. Requires
+/// Accessibility permission; returns nil silently when the app doesn't
+/// expose AX or no window is focused.
+private func focusedWindowTitle(forPid pid: pid_t) -> String? {
+    if !axPermissionGranted() { return nil }
+    let appEl = AXUIElementCreateApplication(pid)
+    var winRef: CFTypeRef?
+    let r1 = AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef)
+    if r1 != .success { return nil }
+    guard let win = winRef, CFGetTypeID(win) == AXUIElementGetTypeID() else { return nil }
+    var titleRef: CFTypeRef?
+    let r2 = AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &titleRef)
+    if r2 != .success { return nil }
+    return titleRef as? String
 }
 
 /// Look up the AX element under a screen point, returning a compact
