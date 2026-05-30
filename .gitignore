@@ -54,3 +54,7 @@ sidecars/python-vision/build/
 # Hermes runtime data
 flows/
 .hermes/
+
+# Reference materials (third-party RPA manuals — local-only, see docs/references/README.md)
+docs/references/*
+!docs/references/README.md
