@@ -42,7 +42,7 @@ describe('collectLayers', () => {
       log('a'),
       { id: newId(), type: 'wait_for', enabled: true, params: { kind: 'time', ms: 1 } },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: false });
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false });
   });
 
   it('detects web from open_url', () => {
@@ -72,7 +72,22 @@ describe('collectLayers', () => {
         ],
       },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: true });
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: true, screen: false });
+  });
+
+  it('detects screen (and desktop) from a screen-layer step', () => {
+    const flow = flowOf([
+      {
+        id: newId(),
+        type: 'click',
+        enabled: true,
+        target: {
+          layer: 'screen',
+          candidates: [{ kind: 'image', assetRef: 'assets/btn.png', threshold: 0.8 }],
+        },
+      },
+    ]);
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: true, screen: true });
   });
 });
 
@@ -99,7 +114,7 @@ describe('runFlow — provider-less execution', () => {
     const events: RunEvent[] = [];
     const result = await runFlow(flow, { onEvent: (e) => events.push(e) });
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false });
     expect(events.some((e) => e.type === 'run:end' && e.outcome === 'success')).toBe(true);
     // start + then-branch + 2 loop ticks
     expect(events.filter((e) => e.type === 'log').length).toBeGreaterThanOrEqual(4);
@@ -149,6 +164,6 @@ describe('loadFlow', () => {
     const fixture = fileURLToPath(new URL('../fixtures/smoke.flow.json', import.meta.url));
     const result = await runFlowFile(fixture);
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false });
   });
 });

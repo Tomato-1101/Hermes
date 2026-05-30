@@ -10,7 +10,9 @@
  * Steps whose target.layer === 'desktop', while the web handlers continue
  * to serve the default layer.
  */
-import type { Step, StepType, TargetRef } from '@hermes/ir';
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
+import type { Selector, Step, StepType, TargetRef } from '@hermes/ir';
 import type {
   HandlerRegistry,
   RunContext,
@@ -18,7 +20,15 @@ import type {
   StepResult,
 } from '@hermes/engine';
 import { DesktopProvider } from './desktop-provider.js';
-import { DesktopAdapterError, type DesktopAdapter, type DesktopSelector, type Point } from './index.js';
+import {
+  DesktopAdapterError,
+  type ClickOpts,
+  type DesktopAdapter,
+  type DesktopSelector,
+  type OcrObservation,
+  type OcrResult,
+  type Point,
+} from './index.js';
 
 function adapter(ctx: RunContext): DesktopAdapter {
   const p = ctx.providers.desktop;
@@ -60,6 +70,33 @@ function makeHandler<T extends StepType>(
   return { type, execute };
 }
 
+/**
+ * Build the humanized ClickOpts for a click step from its params + the run's
+ * humanize settings. Shared by the desktop and screen click handlers so a
+ * click lands the same way regardless of how its target was resolved.
+ */
+function buildClickOpts(ctx: RunContext, params: Step['params']): ClickOpts {
+  const h = humanizeSettings(ctx);
+  const button = params?.['button'] as 'left' | 'right' | 'middle' | undefined;
+  const clicks = params?.['clickCount'] as 1 | 2 | 3 | undefined;
+  const speedOverride = params?.['mouseSpeedPxPerSec'] as number | undefined;
+  const instant = params?.['instant'] === true;
+  // Set by the flow preprocessor when a preceding `wait` was absorbed into
+  // this click's pre-move, so the click lands at the recorded rhythm.
+  const moveDurationOverride = params?.['moveDurationMs'] as number | undefined;
+  return {
+    speedPxPerSec: speedOverride ?? h.mouseSpeedPxPerSec,
+    minSteps: h.mouseMinSteps,
+    maxSteps: h.mouseMaxSteps,
+    ...(instant ? { instant: true } : {}),
+    ...(button ? { button } : {}),
+    ...(clicks ? { clicks } : {}),
+    ...(moveDurationOverride !== undefined
+      ? { durationMsOverride: moveDurationOverride }
+      : {}),
+  };
+}
+
 /** Pull a coords-style point out of a TargetRef, or throw. */
 function coordsFromTarget(target: TargetRef | undefined): Point {
   if (!target) throw new Error('desktop step requires a target');
@@ -98,26 +135,7 @@ export const desktopStepHandlers: StepHandler[] = [
       });
       return { outcome: 'completed' };
     }
-    const button = step.params?.['button'] as 'left' | 'right' | 'middle' | undefined;
-    const clicks = step.params?.['clickCount'] as 1 | 2 | 3 | undefined;
-    const speedOverride = step.params?.['mouseSpeedPxPerSec'] as number | undefined;
-    const instant = step.params?.['instant'] === true;
-    // Set by the flow preprocessor when a preceding `wait` was absorbed
-    // into this click's pre-move. Forces the move to take exactly this
-    // many ms so the click lands at the recorded rhythm.
-    const moveDurationOverride = step.params?.['moveDurationMs'] as number | undefined;
-    const h = humanizeSettings(ctx);
-    await adapter(ctx).click(pt, {
-      speedPxPerSec: speedOverride ?? h.mouseSpeedPxPerSec,
-      minSteps: h.mouseMinSteps,
-      maxSteps: h.mouseMaxSteps,
-      ...(instant ? { instant: true } : {}),
-      ...(button ? { button } : {}),
-      ...(clicks ? { clicks } : {}),
-      ...(moveDurationOverride !== undefined
-        ? { durationMsOverride: moveDurationOverride }
-        : {}),
-    });
+    await adapter(ctx).click(pt, buildClickOpts(ctx, step.params));
     return { outcome: 'completed' };
   }),
 
@@ -251,4 +269,122 @@ export const desktopStepHandlers: StepHandler[] = [
 /** Convenience: register every desktop handler under the `desktop` layer. */
 export function registerDesktopHandlers(registry: HandlerRegistry): void {
   for (const h of desktopStepHandlers) registry.register(h, 'desktop');
+}
+
+// ---------------------------------------------------------------------------
+// Screen layer — image-template / OCR / coords resolution
+// ---------------------------------------------------------------------------
+
+/** Center of a logical-point rect — the natural click target. */
+function centerOfBbox(b: { x: number; y: number; w: number; h: number }): Point {
+  return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+}
+
+/**
+ * Load an image-selector template. `assetRef` is resolved relative to the
+ * run's assets dir (`ctx.vars.__hermes_assets_dir__`, injected by the runner)
+ * unless it is already absolute.
+ */
+async function resolveAssetBytes(ctx: RunContext, assetRef: string): Promise<Buffer> {
+  if (isAbsolute(assetRef)) return readFile(assetRef);
+  const dir = ctx.vars['__hermes_assets_dir__'];
+  if (typeof dir !== 'string' || !dir) {
+    throw new DesktopAdapterError(
+      `cannot resolve image asset '${assetRef}': no __hermes_assets_dir__ set for this run`,
+      'selector_not_found',
+    );
+  }
+  return readFile(join(dir, assetRef));
+}
+
+/** First OCR observation whose text matches the selector (substring or regex). */
+function ocrFind(
+  res: OcrResult,
+  sel: Extract<Selector, { kind: 'ocr' }>,
+): OcrObservation | null {
+  const test = sel.regex
+    ? (t: string) => new RegExp(sel.text).test(t)
+    : (t: string) => t.includes(sel.text);
+  return res.observations.find((o) => test(o.text)) ?? null;
+}
+
+/** Resolve a screen-layer target to a click point via the first usable candidate. */
+async function resolveScreenPoint(step: Step, ctx: RunContext): Promise<Point> {
+  const target = step.target;
+  if (!target || target.candidates.length === 0) {
+    throw new Error('screen step requires a target with candidates');
+  }
+  const a = adapter(ctx);
+  for (const sel of target.candidates) {
+    if (sel.kind === 'coords') {
+      return { x: sel.x, y: sel.y };
+    }
+    if (sel.kind === 'image') {
+      const tmpl = await resolveAssetBytes(ctx, sel.assetRef);
+      const match = await a.findImageOnScreen(tmpl, {
+        threshold: sel.threshold,
+        ...(sel.scaleInvariant ? { scaleInvariant: true } : {}),
+        ...(target.region ? { region: target.region } : {}),
+      });
+      if (!match.found || !match.center) {
+        throw new DesktopAdapterError(
+          `screen image selector '${sel.assetRef}' not found (best score ${match.score.toFixed(2)})`,
+          'selector_not_found',
+        );
+      }
+      return match.center;
+    }
+    if (sel.kind === 'ocr') {
+      const res = await a.readScreenText({
+        ...(target.region ? { region: target.region } : {}),
+        ...(sel.lang ? { languages: [sel.lang] } : {}),
+      });
+      const obs = ocrFind(res, sel);
+      if (!obs) {
+        throw new DesktopAdapterError(
+          `screen ocr selector text '${sel.text}' not found on screen`,
+          'selector_not_found',
+        );
+      }
+      return centerOfBbox(obs.bbox);
+    }
+  }
+  throw new DesktopAdapterError(
+    'screen step has no resolvable candidate (need image / ocr / coords)',
+    'selector_not_found',
+  );
+}
+
+export const screenStepHandlers: StepHandler[] = [
+  makeHandler('click', async (step, ctx) => {
+    const pt = await resolveScreenPoint(step, ctx);
+    await adapter(ctx).click(pt, buildClickOpts(ctx, step.params));
+    return { outcome: 'completed' };
+  }),
+
+  makeHandler('extract', async (step, ctx) => {
+    // OCR-read a region (or the whole screen) into a variable. With an `ocr`
+    // selector carrying text, narrow to that matching line; otherwise capture
+    // all recognized text.
+    const target = step.target;
+    const sel = target?.candidates.find(
+      (c): c is Extract<Selector, { kind: 'ocr' }> => c.kind === 'ocr',
+    );
+    const res = await adapter(ctx).readScreenText({
+      ...(target?.region ? { region: target.region } : {}),
+      ...(sel?.lang ? { languages: [sel.lang] } : {}),
+    });
+    let value = res.text;
+    if (sel && sel.text) {
+      value = ocrFind(res, sel)?.text ?? '';
+    }
+    const into = String(step.params?.['into'] ?? '');
+    if (into) ctx.vars[into] = value;
+    return { outcome: 'completed', data: { value } };
+  }),
+];
+
+/** Convenience: register every screen handler under the `screen` layer. */
+export function registerScreenHandlers(registry: HandlerRegistry): void {
+  for (const h of screenStepHandlers) registry.register(h, 'screen');
 }

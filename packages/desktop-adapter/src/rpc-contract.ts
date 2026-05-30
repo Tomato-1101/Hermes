@@ -179,6 +179,48 @@ export const RPC_CONTRACT = {
       format: z.string(),
     }),
   },
+  'screen.findImage': {
+    params: z.object({
+      template: z.string(), // base64 PNG
+      threshold: z.number().optional(),
+      scaleInvariant: z.boolean().optional(),
+      region: RegionSchema.optional(),
+    }),
+    // found=false carries the best score; found=true adds the match rect
+    // (top-left x/y + w/h) and its center (cx/cy) in logical points.
+    result: z.object({
+      found: z.boolean(),
+      score: z.number(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      w: z.number().optional(),
+      h: z.number().optional(),
+      cx: z.number().optional(),
+      cy: z.number().optional(),
+    }),
+  },
+  'screen.ocr': {
+    params: z
+      .object({
+        region: RegionSchema.optional(),
+        languages: z.array(z.string()).optional(),
+        lang: z.string().optional(),
+      })
+      .nullish(),
+    result: z.object({
+      text: z.string(),
+      observations: z.array(
+        z.object({
+          text: z.string(),
+          confidence: z.number(),
+          x: z.number(),
+          y: z.number(),
+          w: z.number(),
+          h: z.number(),
+        }),
+      ),
+    }),
+  },
 
   'mouse.click': {
     params: z.object({

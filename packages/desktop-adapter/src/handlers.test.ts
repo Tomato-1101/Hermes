@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { HandlerRegistry, type RunContext, type StepHandler } from '@hermes/engine';
 import type { Step } from '@hermes/ir';
 import { DesktopProvider } from './desktop-provider.js';
-import { desktopStepHandlers, registerDesktopHandlers } from './handlers.js';
+import {
+  desktopStepHandlers,
+  registerDesktopHandlers,
+  registerScreenHandlers,
+  screenStepHandlers,
+} from './handlers.js';
 import type { DesktopAdapter } from './index.js';
 
 function fakeAdapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
@@ -17,6 +25,8 @@ function fakeAdapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
     scroll: vi.fn(async () => undefined),
     drag: vi.fn(async () => undefined),
     screenshot: vi.fn(async () => Buffer.alloc(0)),
+    findImageOnScreen: vi.fn(async () => ({ found: false, score: 0 })),
+    readScreenText: vi.fn(async () => ({ text: '', observations: [] })),
     waitForState: vi.fn(async () => undefined),
     listApps: vi.fn(async () => []),
     focusApp: vi.fn(async () => undefined),
@@ -370,5 +380,178 @@ describe('desktop step handlers', () => {
     await expect(getHandler('wait_for').execute(step, ctxFor(adapter))).rejects.toThrow(
       /Unsupported/,
     );
+  });
+});
+
+function getScreenHandler(type: string): StepHandler {
+  const h = screenStepHandlers.find((h) => h.type === type);
+  if (!h) throw new Error(`screen handler ${type} not found`);
+  return h;
+}
+
+describe('screen step handlers', () => {
+  it('click via image selector finds the template and clicks its center', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-screen-'));
+    try {
+      const asset = join(dir, 'btn.png');
+      await writeFile(asset, Buffer.from('fake-png-bytes'));
+      const adapter = fakeAdapter({
+        findImageOnScreen: vi.fn(async () => ({
+          found: true,
+          score: 0.95,
+          center: { x: 150, y: 250 },
+          bbox: { x: 100, y: 200, w: 100, h: 100 },
+        })),
+      });
+      const step: Step = {
+        id: 'sc1',
+        type: 'click',
+        enabled: true,
+        target: {
+          layer: 'screen',
+          candidates: [{ kind: 'image', assetRef: asset, threshold: 0.8 }],
+        },
+      };
+      await getScreenHandler('click').execute(step, ctxFor(adapter));
+      // The absolute assetRef is read and forwarded as the template buffer.
+      expect(adapter.findImageOnScreen).toHaveBeenCalledWith(
+        Buffer.from('fake-png-bytes'),
+        { threshold: 0.8 },
+      );
+      expect(adapter.click).toHaveBeenCalledWith(
+        { x: 150, y: 250 },
+        { speedPxPerSec: 800, minSteps: 16, maxSteps: 1200 },
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('image selector resolves a relative assetRef against __hermes_assets_dir__', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-assets-'));
+    try {
+      await writeFile(join(dir, 'icon.png'), Buffer.from('icon'));
+      const adapter = fakeAdapter({
+        findImageOnScreen: vi.fn(async () => ({
+          found: true,
+          score: 0.9,
+          center: { x: 10, y: 20 },
+          bbox: { x: 0, y: 0, w: 20, h: 40 },
+        })),
+      });
+      const step: Step = {
+        id: 'sc2',
+        type: 'click',
+        enabled: true,
+        target: {
+          layer: 'screen',
+          candidates: [{ kind: 'image', assetRef: 'icon.png', threshold: 0.9 }],
+        },
+      };
+      const ctx = ctxFor(adapter);
+      ctx.vars['__hermes_assets_dir__'] = dir;
+      await getScreenHandler('click').execute(step, ctx);
+      expect(adapter.findImageOnScreen).toHaveBeenCalledWith(Buffer.from('icon'), {
+        threshold: 0.9,
+      });
+      expect(adapter.click).toHaveBeenCalledWith({ x: 10, y: 20 }, expect.anything());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('click throws selector_not_found when the image is not on screen', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-screen-'));
+    try {
+      const asset = join(dir, 'missing.png');
+      await writeFile(asset, Buffer.from('x'));
+      const adapter = fakeAdapter({
+        findImageOnScreen: vi.fn(async () => ({ found: false, score: 0.3 })),
+      });
+      const step: Step = {
+        id: 'sc3',
+        type: 'click',
+        enabled: true,
+        target: {
+          layer: 'screen',
+          candidates: [{ kind: 'image', assetRef: asset, threshold: 0.8 }],
+        },
+      };
+      await expect(getScreenHandler('click').execute(step, ctxFor(adapter))).rejects.toMatchObject({
+        class: 'selector_not_found',
+      });
+      expect(adapter.click).not.toHaveBeenCalled();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('click via ocr selector clicks the center of the matching line', async () => {
+    const adapter = fakeAdapter({
+      readScreenText: vi.fn(async () => ({
+        text: 'Cancel\nSubmit',
+        observations: [
+          { text: 'Cancel', confidence: 0.9, bbox: { x: 0, y: 0, w: 60, h: 20 } },
+          { text: 'Submit', confidence: 0.95, bbox: { x: 0, y: 40, w: 60, h: 20 } },
+        ],
+      })),
+    });
+    const step: Step = {
+      id: 'sc4',
+      type: 'click',
+      enabled: true,
+      target: { layer: 'screen', candidates: [{ kind: 'ocr', text: 'Submit', lang: 'en' }] },
+    };
+    await getScreenHandler('click').execute(step, ctxFor(adapter));
+    expect(adapter.click).toHaveBeenCalledWith({ x: 30, y: 50 }, expect.anything());
+  });
+
+  it('extract reads all OCR text into the target variable', async () => {
+    const adapter = fakeAdapter({
+      readScreenText: vi.fn(async () => ({
+        text: 'Total: 42',
+        observations: [{ text: 'Total: 42', confidence: 0.99, bbox: { x: 0, y: 0, w: 80, h: 20 } }],
+      })),
+    });
+    const step: Step = {
+      id: 'sc5',
+      type: 'extract',
+      enabled: true,
+      params: { into: 'amount' },
+    };
+    const ctx = ctxFor(adapter);
+    const res = await getScreenHandler('extract').execute(step, ctx);
+    expect(ctx.vars['amount']).toBe('Total: 42');
+    expect(res.data).toEqual({ value: 'Total: 42' });
+  });
+
+  it('extract with an ocr selector narrows to the matching line', async () => {
+    const adapter = fakeAdapter({
+      readScreenText: vi.fn(async () => ({
+        text: 'Name: Bob\nTotal: 42',
+        observations: [
+          { text: 'Name: Bob', confidence: 0.9, bbox: { x: 0, y: 0, w: 80, h: 20 } },
+          { text: 'Total: 42', confidence: 0.95, bbox: { x: 0, y: 40, w: 80, h: 20 } },
+        ],
+      })),
+    });
+    const step: Step = {
+      id: 'sc6',
+      type: 'extract',
+      enabled: true,
+      target: { layer: 'screen', candidates: [{ kind: 'ocr', text: 'Total', lang: 'en' }] },
+      params: { into: 'total' },
+    };
+    const ctx = ctxFor(adapter);
+    await getScreenHandler('extract').execute(step, ctx);
+    expect(ctx.vars['total']).toBe('Total: 42');
+  });
+
+  it('registerScreenHandlers adds click + extract under the screen layer', () => {
+    const r = new HandlerRegistry();
+    registerScreenHandlers(r);
+    expect(r.get('click', 'screen')).toBeDefined();
+    expect(r.get('extract', 'screen')).toBeDefined();
+    expect(r.get('click')).toBeUndefined(); // no default-layer handler
   });
 });

@@ -7,12 +7,14 @@
  * SidecarClient. The adapter is intentionally side-effect free at
  * construction so tests can substitute a fake client.
  *
- * Scope (Phase 1b):
+ * Scope (Phase 1):
  *   - Implemented: coords click/doubleClick/rightClick/hover, type,
- *     keyCombo, listApps, getFocusedApp, ensurePermissions, dispose.
- *   - Stubbed: AX selector lookup, focusApp, scroll, drag, screenshot.
- *     These need additional sidecar RPCs (AX tree walk, NSWorkspace
- *     activate, ScreenCaptureKit) that land in a later sub-phase.
+ *     keyCombo, scroll, drag, screenshot, listApps, getFocusedApp,
+ *     ensurePermissions, dispose, and the screen layer
+ *     (findImageOnScreen / readScreenText via screen.findImage / screen.ocr).
+ *   - Stubbed: AX selector lookup (findElement only resolves `coords`),
+ *     focusApp. These need AX-tree-walk / NSWorkspace.activate RPCs that
+ *     land in a later sub-phase.
  */
 import type { AppRef } from '@hermes/ir';
 import type {
@@ -21,7 +23,11 @@ import type {
   DesktopAdapter,
   DesktopSelector,
   ElementHandle,
+  FindImageOpts,
   FindOpts,
+  ImageMatch,
+  OcrOpts,
+  OcrResult,
   PermissionStatus,
   Point,
   ScreenshotOpts,
@@ -263,6 +269,62 @@ export class MacosDesktopAdapter implements DesktopAdapter {
       throw new DesktopAdapterError('screen.capture returned no data', 'unknown');
     }
     return Buffer.from(res.data, 'base64');
+  }
+
+  async findImageOnScreen(template: Buffer, opts: FindImageOpts = {}): Promise<ImageMatch> {
+    const params: Record<string, unknown> = { template: template.toString('base64') };
+    if (opts.threshold !== undefined) params['threshold'] = opts.threshold;
+    if (opts.scaleInvariant) params['scaleInvariant'] = true;
+    if (opts.region) params['region'] = opts.region;
+    const res = (await this.client.call('screen.findImage', params)) as {
+      found?: boolean;
+      score?: number;
+      x?: number;
+      y?: number;
+      w?: number;
+      h?: number;
+      cx?: number;
+      cy?: number;
+    } | null;
+    if (!res || !res.found) return { found: false, score: res?.score ?? 0 };
+    const match: ImageMatch = { found: true, score: res.score ?? 0 };
+    if (typeof res.cx === 'number' && typeof res.cy === 'number') {
+      match.center = { x: res.cx, y: res.cy };
+    }
+    if (
+      typeof res.x === 'number' &&
+      typeof res.y === 'number' &&
+      typeof res.w === 'number' &&
+      typeof res.h === 'number'
+    ) {
+      match.bbox = { x: res.x, y: res.y, w: res.w, h: res.h };
+    }
+    return match;
+  }
+
+  async readScreenText(opts: OcrOpts = {}): Promise<OcrResult> {
+    const params: Record<string, unknown> = {};
+    if (opts.region) params['region'] = opts.region;
+    if (opts.languages && opts.languages.length) params['languages'] = opts.languages;
+    const res = (await this.client.call('screen.ocr', params)) as {
+      text?: string;
+      observations?: {
+        text: string;
+        confidence: number;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+      }[];
+    } | null;
+    return {
+      text: res?.text ?? '',
+      observations: (res?.observations ?? []).map((o) => ({
+        text: o.text,
+        confidence: o.confidence,
+        bbox: { x: o.x, y: o.y, w: o.w, h: o.h },
+      })),
+    };
   }
 
   async waitForState(

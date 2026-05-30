@@ -6,6 +6,7 @@
  * load-then-run convenience the CLI calls.
  */
 import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { HandlerRegistry, StepExecutor } from '@hermes/engine';
 import type { RunEvent } from '@hermes/engine';
 import { assertValidFlow } from '@hermes/ir';
@@ -22,6 +23,12 @@ export interface RunFlowOptions {
   onEvent?: (e: RunEvent) => void;
   /** Provider construction knobs (web headless/profile, sidecar binary). */
   providers?: BuildProviderOptions;
+  /**
+   * Base directory that screen-layer `image` selector assetRefs resolve
+   * against. Exposed to handlers as `vars.__hermes_assets_dir__`. Defaults to
+   * the flow file's directory in `runFlowFile`.
+   */
+  assetsDir?: string;
 }
 
 export interface RunFlowResult {
@@ -55,8 +62,11 @@ export async function runFlow(flow: Flow, opts: RunFlowOptions = {}): Promise<Ru
     registerWebHandlers(registry);
   }
   if (layers.desktop) {
-    const { registerDesktopHandlers } = await import('@hermes/desktop-adapter/handlers');
+    const { registerDesktopHandlers, registerScreenHandlers } = await import(
+      '@hermes/desktop-adapter/handlers'
+    );
     registerDesktopHandlers(registry);
+    if (layers.screen) registerScreenHandlers(registry);
   }
 
   const handles = await buildProviders(layers, opts.providers);
@@ -67,7 +77,12 @@ export async function runFlow(flow: Flow, opts: RunFlowOptions = {}): Promise<Ru
       secrets: opts.secrets,
     });
     if (opts.onEvent) executor.on(opts.onEvent);
-    const outcome = await executor.run(flow, { signal: opts.signal, inputs: opts.inputs });
+    // Screen-layer image assets resolve against assetsDir; surface it to the
+    // handlers as a magic var (mirrors how humanize settings are injected).
+    const inputs = opts.assetsDir
+      ? { ...(opts.inputs ?? {}), __hermes_assets_dir__: opts.assetsDir }
+      : opts.inputs;
+    const outcome = await executor.run(flow, { signal: opts.signal, inputs });
     return { outcome, flowId: flow.id, layers };
   } finally {
     await handles.dispose();
@@ -78,5 +93,8 @@ export async function runFlowFile(
   filePath: string,
   opts: RunFlowOptions = {},
 ): Promise<RunFlowResult> {
-  return runFlow(await loadFlow(filePath), opts);
+  const flow = await loadFlow(filePath);
+  // Image assetRefs in a file-loaded flow are relative to the flow file.
+  const assetsDir = opts.assetsDir ?? dirname(resolve(filePath));
+  return runFlow(flow, { ...opts, assetsDir });
 }

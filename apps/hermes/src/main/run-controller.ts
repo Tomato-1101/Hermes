@@ -25,7 +25,7 @@ import { Vault } from '@hermes/storage';
 import { collectSecretRefs } from '@hermes/ir';
 import { MacosDesktopAdapter } from '@hermes/desktop-adapter/macos';
 import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
-import { registerDesktopHandlers } from '@hermes/desktop-adapter/handlers';
+import { registerDesktopHandlers, registerScreenHandlers } from '@hermes/desktop-adapter/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
 import { getSidecarClient } from './sidecar.js';
 import { DesktopRecorder } from './desktop-recorder.js';
@@ -381,7 +381,11 @@ export class RunController {
     // the source of truth: WebRecorder emits target.layer='web' (or an
     // open_url step), DesktopRecorder emits target.layer='desktop'.
     const needsWeb = flow.steps.some(stepNeedsLayer('web'));
-    const needsDesktop = flow.steps.some(stepNeedsLayer('desktop'));
+    // Screen-layer steps (image / OCR / coords) ride the desktop sidecar, so
+    // they imply the desktop provider too — but they additionally need the
+    // screen handlers registered and an assets dir for image templates.
+    const needsScreen = flow.steps.some(stepNeedsLayer('screen'));
+    const needsDesktop = needsScreen || flow.steps.some(stepNeedsLayer('desktop'));
 
     // Log the decision so the user can see in the log panel WHY a provider
     // is (or isn't) about to start. If "browser opens on a desktop-only
@@ -434,6 +438,7 @@ export class RunController {
     const registry = new HandlerRegistry();
     registerWebHandlers(registry);
     if (this.desktop) registerDesktopHandlers(registry);
+    if (this.desktop && needsScreen) registerScreenHandlers(registry);
 
     // Pre-fetch every secret the flow references so the engine can
     // interpolate without itself touching keytar. Unknown secrets resolve
@@ -464,6 +469,10 @@ export class RunController {
     const seededInputs: Record<string, unknown> = {
       ...(inputs ?? {}),
       __hermes_humanize__: humanize,
+      // Image-selector assetRefs are stored relative to the flow dir
+      // (e.g. "assets/btn.png"); the screen handlers resolve them against
+      // this base. Mirrors runFlowFile's dirname(flow file) in the CLI.
+      ...(needsScreen ? { __hermes_assets_dir__: this.store.flowDir(flowId) } : {}),
     };
 
     const executor = new StepExecutor({
@@ -670,7 +679,7 @@ function extractSecretName(step: Step): string | null {
  */
 const WEB_IMPLIED_TYPES = new Set(['open_url']);
 
-function stepNeedsLayer(layer: 'web' | 'desktop'): (s: Step) => boolean {
+function stepNeedsLayer(layer: 'web' | 'desktop' | 'screen'): (s: Step) => boolean {
   return (step) => {
     if (step.target?.layer === layer) return true;
     if (layer === 'web' && WEB_IMPLIED_TYPES.has(step.type)) return true;

@@ -231,6 +231,65 @@ describe('MacosDesktopAdapter', () => {
     });
   });
 
+  it('findImageOnScreen sends base64 template + opts and maps a hit to center/bbox', async () => {
+    const calls: { m: string; p: unknown }[] = [];
+    const client = makeFakeClient({
+      'screen.findImage': (p) => {
+        calls.push({ m: 'screen.findImage', p });
+        return { found: true, score: 0.93, x: 10, y: 20, w: 40, h: 16, cx: 30, cy: 28 };
+      },
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    const match = await adapter.findImageOnScreen(Buffer.from('PNGDATA'), {
+      threshold: 0.85,
+      scaleInvariant: true,
+      region: { x: 0, y: 0, w: 100, h: 100 },
+    });
+    expect(calls[0]?.p).toEqual({
+      template: Buffer.from('PNGDATA').toString('base64'),
+      threshold: 0.85,
+      scaleInvariant: true,
+      region: { x: 0, y: 0, w: 100, h: 100 },
+    });
+    expect(match).toEqual({
+      found: true,
+      score: 0.93,
+      center: { x: 30, y: 28 },
+      bbox: { x: 10, y: 20, w: 40, h: 16 },
+    });
+  });
+
+  it('findImageOnScreen maps a miss to found:false with the best score', async () => {
+    const client = makeFakeClient({ 'screen.findImage': () => ({ found: false, score: 0.4 }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    const match = await adapter.findImageOnScreen(Buffer.from('x'));
+    expect(match).toEqual({ found: false, score: 0.4 });
+  });
+
+  it('readScreenText maps observations into bbox-shaped results', async () => {
+    const client = makeFakeClient({
+      'screen.ocr': () => ({
+        text: 'Hello\nWorld',
+        observations: [
+          { text: 'Hello', confidence: 0.99, x: 1, y: 2, w: 30, h: 12 },
+          { text: 'World', confidence: 0.95, x: 1, y: 20, w: 32, h: 12 },
+        ],
+      }),
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    const res = await adapter.readScreenText({ region: { x: 0, y: 0, w: 200, h: 80 }, languages: ['en-US'] });
+    expect(res.text).toBe('Hello\nWorld');
+    expect(res.observations[0]).toEqual({
+      text: 'Hello',
+      confidence: 0.99,
+      bbox: { x: 1, y: 2, w: 30, h: 12 },
+    });
+    expect(client.call).toHaveBeenCalledWith('screen.ocr', {
+      region: { x: 0, y: 0, w: 200, h: 80 },
+      languages: ['en-US'],
+    });
+  });
+
   it('focusApp still throws not-yet-implemented', async () => {
     const client = makeFakeClient({});
     const adapter = new MacosDesktopAdapter({ client });
