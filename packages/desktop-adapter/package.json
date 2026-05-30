@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./macos": "./src/macos.ts",
     "./sidecar-client": "./src/sidecar-client.ts",
+    "./transport": "./src/transport.ts",
     "./desktop-provider": "./src/desktop-provider.ts",
     "./handlers": "./src/handlers.ts",
     "./rpc-contract": "./src/rpc-contract.ts"
