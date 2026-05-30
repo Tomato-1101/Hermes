@@ -91,6 +91,12 @@ export const webStepHandlers: StepHandler[] = [
   makeHandler('type', async (step, ctx) => {
     if (!step.target) throw new Error('type requires target');
     const text = String(step.params?.['text'] ?? '');
+    // `control: 'select'` marks a recorded <select> change — replay must pick
+    // an option, not type into the element. See WebProvider.selectOption.
+    if (step.params?.['control'] === 'select') {
+      await provider(ctx).selectOption(step.target, text);
+      return { outcome: 'completed' };
+    }
     const clearFirst = step.params?.['clearFirst'] === true;
     const delayOverride = step.params?.['delayMs'] as number | undefined;
     const args: { clearFirst?: boolean; delayMs?: number } = { clearFirst };

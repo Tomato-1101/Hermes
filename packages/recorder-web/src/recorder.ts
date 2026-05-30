@@ -158,11 +158,23 @@ export class WebRecorder {
     if (!this.running) return;
     switch (payload.kind) {
       case 'click':
+        // A click that lands on a <select> opens the native option list — an
+        // OS-drawn popup Playwright can't replay by clicking. The element's
+        // `change` event (handled below) already carries the chosen value and
+        // replays faithfully via selectOption, so drop the redundant click.
+        if (payload.element?.tag === 'select') return;
         this.emitStep(this.buildClickStep(payload), payload);
         return;
-      case 'input':
+      case 'input': {
+        // Checkboxes / radios fire both a `click` (recorded as a click step
+        // that toggles the control on replay) and a `change`. Replaying the
+        // change as a `type` would call fill() on a non-text control and throw,
+        // so let the click step own the toggle and drop the change here.
+        const t = payload.element?.type;
+        if (t === 'checkbox' || t === 'radio') return;
         this.emitStep(this.buildInputStep(payload), payload);
         return;
+      }
       case 'key':
         this.emitStep(this.buildKeyStep(payload), payload);
         return;
@@ -231,10 +243,18 @@ export class WebRecorder {
 
   private buildInputStep(p: RecorderInputPayload): Step {
     const target = elementToTarget(p.element, p.url);
-    const params: Record<string, unknown> = {
-      text: p.isSecret ? `\${secrets.${p.element.label ?? p.element.name ?? 'value'}}` : (p.value ?? ''),
-      clearFirst: true,
-    };
+    const isSelect = p.element.tag === 'select';
+    // A <select> can't be typed into; replay must call selectOption with the
+    // chosen option's value. `control: 'select'` routes the type handler there
+    // (see web-provider/handlers); text inputs keep the plain fill/type path.
+    const params: Record<string, unknown> = isSelect
+      ? { text: p.value ?? '', control: 'select' }
+      : {
+          text: p.isSecret
+            ? `\${secrets.${p.element.label ?? p.element.name ?? 'value'}}`
+            : (p.value ?? ''),
+          clearFirst: true,
+        };
     const step: Step = {
       id: ulid(),
       type: 'type',
@@ -248,7 +268,9 @@ export class WebRecorder {
       },
     };
     const lbl = p.element.label ?? p.element.placeholder ?? p.element.name ?? 'field';
-    step.label = `Type into "${trim(lbl, 30)}"${p.isSecret ? ' (secret)' : ''}`;
+    step.label = isSelect
+      ? `Select "${trim(p.value ?? '', 30)}" in "${trim(lbl, 30)}"`
+      : `Type into "${trim(lbl, 30)}"${p.isSecret ? ' (secret)' : ''}`;
     return step;
   }
 

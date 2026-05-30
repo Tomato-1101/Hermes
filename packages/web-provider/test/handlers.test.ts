@@ -59,6 +59,43 @@ function fakeCtx(provider: WebProvider): RunContext {
   } as unknown as RunContext;
 }
 
+describe('type handler control dispatch', () => {
+  const type = findHandler('type');
+  const target = { layer: 'web' as const, candidates: [{ kind: 'css' as const, value: '#pref' }] };
+
+  it('routes control=select to provider.selectOption with the captured value', async () => {
+    const p = fakeProvider();
+    const selectOption = vi.spyOn(p, 'selectOption').mockResolvedValue(undefined);
+    const typeInto = vi.spyOn(p, 'typeInto').mockResolvedValue(undefined);
+    const step: Step = {
+      id: 's1',
+      type: 'type',
+      enabled: true,
+      target,
+      params: { text: 'tokyo', control: 'select' },
+    };
+    await type.execute(step, fakeCtx(p));
+    expect(selectOption).toHaveBeenCalledWith(target, 'tokyo');
+    expect(typeInto).not.toHaveBeenCalled();
+  });
+
+  it('routes a plain text type to provider.typeInto, not selectOption', async () => {
+    const p = fakeProvider();
+    const selectOption = vi.spyOn(p, 'selectOption').mockResolvedValue(undefined);
+    const typeInto = vi.spyOn(p, 'typeInto').mockResolvedValue(undefined);
+    const step: Step = {
+      id: 's1',
+      type: 'type',
+      enabled: true,
+      target,
+      params: { text: 'a@b.co', clearFirst: true },
+    };
+    await type.execute(step, fakeCtx(p));
+    expect(typeInto).toHaveBeenCalledWith(target, 'a@b.co', expect.objectContaining({ clearFirst: true }));
+    expect(selectOption).not.toHaveBeenCalled();
+  });
+});
+
 describe('wait_for handler kind dispatch', () => {
   const waitFor = findHandler('wait_for');
 

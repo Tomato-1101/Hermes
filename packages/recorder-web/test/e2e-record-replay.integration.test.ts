@@ -121,4 +121,85 @@ const RUN_E2E = process.env['HERMES_E2E'] === '1';
       await rm(profile2, { recursive: true, force: true }).catch(() => {});
     }
   }, 90_000);
+
+  // Regression: <select> and checkbox can't be typed into. The recorder must
+  // emit a selectOption-routed type step for the dropdown and let the click
+  // step own the checkbox toggle — otherwise replay calls fill() and throws.
+  it('records a <select> choice + checkbox toggle and replays the final state', async () => {
+    const profile1 = join(tmpdir(), `hermes-rec2-${Date.now()}`);
+    const profile2 = join(tmpdir(), `hermes-rep2-${Date.now()}`);
+    await mkdir(profile1, { recursive: true });
+    await mkdir(profile2, { recursive: true });
+
+    const html = `
+      <!doctype html><html><body>
+        <select id="pref" data-testid="pref">
+          <option value="tokyo">東京</option>
+          <option value="osaka">大阪</option>
+        </select>
+        <input type="checkbox" id="agree" data-testid="agree" />
+      </body></html>`;
+    const url = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+
+    // ----- RECORD PHASE -----
+    const recProvider = createWebProvider({ profileDir: profile1, headless: true, channel: 'chrome' });
+    await recProvider.start();
+    const recorder = new WebRecorder();
+    await recorder.attach(recProvider);
+    const captured: Step[] = [];
+    recorder.on('step', (e) => captured.push(e.step));
+
+    recorder.start();
+    const page = recProvider.page();
+    await page.goto(url);
+    await page.selectOption('[data-testid="pref"]', 'osaka'); // change → select-type step
+    await page.check('[data-testid="agree"]'); // click → click step (toggle)
+    await page.waitForTimeout(200);
+    recorder.stop();
+    await recorder.detach();
+    await recProvider.close();
+
+    const actionable = captured.filter((s) => s.type === 'click' || s.type === 'type');
+    const selectStep = actionable.find((s) => s.type === 'type');
+    expect(selectStep?.params).toMatchObject({ control: 'select', text: 'osaka' });
+    // The checkbox change must NOT have produced a type step (only its click).
+    expect(actionable.filter((s) => s.type === 'type')).toHaveLength(1);
+
+    const flow: Flow = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: newId(),
+      name: 'e2e select replay',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      inputs: [],
+      outputs: [],
+      variables: [],
+      defaults: { timeoutMs: 30_000, retry: { attempts: 1 }, screenshotOnError: false, waitBetweenStepsMs: 0 },
+      steps: [
+        { id: newId(), type: 'open_url', enabled: true, params: { url, waitUntil: 'load' } },
+        ...actionable,
+      ],
+      metadata: { origin: 'recorded', targets: ['web'], requiredPermissions: [] },
+    };
+
+    // ----- REPLAY PHASE -----
+    const repProvider = createWebProvider({ profileDir: profile2, headless: true, channel: 'chrome' });
+    await repProvider.start();
+    try {
+      const reg = new HandlerRegistry();
+      registerWebHandlers(reg);
+      const executor = new StepExecutor({ registry: reg, providers: { web: repProvider } });
+      const outcome = await executor.run(flow);
+      expect(outcome).toBe('success');
+      const state = await repProvider.page().evaluate(() => ({
+        pref: (document.getElementById('pref') as HTMLSelectElement).value,
+        agree: (document.getElementById('agree') as HTMLInputElement).checked,
+      }));
+      expect(state).toEqual({ pref: 'osaka', agree: true });
+    } finally {
+      await repProvider.close();
+      await rm(profile1, { recursive: true, force: true }).catch(() => {});
+      await rm(profile2, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 90_000);
 });

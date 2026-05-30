@@ -416,6 +416,22 @@ export class WebProvider implements WebProviderHandle {
     }
   }
 
+  /**
+   * Choose an option in a `<select>`. Recorded dropdown changes land here
+   * (a `<select>` rejects fill()/type()). Try matching the captured string as
+   * an option value first, then fall back to its visible label, since the
+   * recorder captures `select.value` but a hand-edited flow may carry the
+   * human-readable text instead.
+   */
+  async selectOption(target: TargetRef, value: string): Promise<void> {
+    const { locator } = await this.resolve(target);
+    try {
+      await locator.selectOption({ value });
+    } catch {
+      await locator.selectOption({ label: value });
+    }
+  }
+
   async keyCombo(keys: string[]): Promise<void> {
     const page = this.page();
     const playwrightCombo = mapKeyCombo(keys);
