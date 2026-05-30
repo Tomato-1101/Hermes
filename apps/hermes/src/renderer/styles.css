@@ -150,6 +150,25 @@ hr {
 .pane-header .toolbar { display: flex; gap: var(--space-3); }
 .pane-header small { font-weight: var(--weight-normal); }
 
+/* Editor title + live run/record status pill. */
+.pane-title { display: inline-flex; align-items: center; gap: var(--space-4); min-width: 0; }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  padding: 1px var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid currentColor;
+}
+.status-pill.running { color: var(--ok); }
+.status-pill.recording { color: var(--err); animation: status-blink 1.4s ease-in-out infinite; }
+@keyframes status-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* macOS: traffic-light buttons (close/min/zoom) live at x≈18 with
    hiddenInset, so the left pane header needs ~70-80px of left padding to
    keep "フロー" from being eclipsed by them. The platform-darwin class is
@@ -160,6 +179,15 @@ body.platform-darwin .pane-left .pane-header {
 
 .pane-body { padding: var(--space-7); overflow: auto; flex: 1; }
 .pane-body.empty { display: flex; align-items: center; justify-content: center; }
+/* Centered call-to-action for the empty editor: one line + a primary button. */
+.empty-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  text-align: center;
+}
+.empty-cta button.primary { padding: var(--space-3) var(--space-7); font-size: var(--text-md); }
 
 .muted { color: var(--fg-muted); }
 .ok { color: var(--ok); }
@@ -243,6 +271,17 @@ body.platform-darwin .pane-left .pane-header {
 }
 .step-node:hover { border-color: var(--accent); }
 .step-node.active { border-color: var(--accent-strong); background: var(--bg-active); }
+/* The step the engine is currently executing during a run. Pulses so the
+   eye can follow progress down the timeline. */
+.step-node.running {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 1px var(--ok);
+  animation: step-pulse 1.2s ease-in-out infinite;
+}
+@keyframes step-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--ok); }
+  50% { box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.25); }
+}
 .step-row { display: grid; grid-template-columns: 60px 100px 1fr auto; gap: var(--space-5); align-items: center; }
 .step-index {
   color: var(--fg-muted);

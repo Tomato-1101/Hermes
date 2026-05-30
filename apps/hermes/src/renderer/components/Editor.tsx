@@ -13,6 +13,7 @@ export function Editor() {
   const recording = useStore((s) => s.recording);
   const running = useStore((s) => s.running);
   const saveFlow = useStore((s) => s.saveFlow);
+  const createFlow = useStore((s) => s.createFlow);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const undoStackLen = useStore((s) => s.undoStack.length);
@@ -25,11 +26,25 @@ export function Editor() {
   const prompt = usePrompt();
 
   if (!flow) {
+    const onNewFlow = async (): Promise<void> => {
+      const name = await prompt({ title: '新しいフローの名前は？', defaultValue: 'Untitled flow' });
+      if (!name) return;
+      try {
+        await createFlow(name);
+      } catch {
+        // store already surfaced the error via appendLog
+      }
+    };
     return (
       <main className="pane pane-center">
         <header className="pane-header">エディタ</header>
         <div className="pane-body empty">
-          <p className="muted">左から既存フローを選ぶか、「新規」で新しいフローを作成してください。</p>
+          <div className="empty-cta">
+            <p className="muted">フローを選ぶか、新しく作成しましょう。</p>
+            <button type="button" className="primary" onClick={() => void onNewFlow()}>
+              + 新規フロー
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -91,7 +106,11 @@ export function Editor() {
   return (
     <main className="pane pane-center">
       <header className="pane-header">
-        <span>{flow.name}</span>
+        <span className="pane-title">
+          {flow.name}
+          {recording && <span className="status-pill recording">● 録画中</span>}
+          {running && <span className="status-pill running">● 実行中</span>}
+        </span>
         <div className="toolbar">
           {recording ? (
             <button

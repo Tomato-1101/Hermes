@@ -112,6 +112,9 @@ type State = {
   dirty: boolean;
   recording: boolean;
   running: boolean;
+  /** Step currently executing during a run (driven by run:step events), so
+   *  the timeline can highlight where the engine is. Null when idle. */
+  activeStepId: string | null;
   log: LogEntry[];
   /** History of "undo patches" — each entry is a patch that, applied to the
    *  current flow, returns to the prior state. Top is most recent. */
@@ -164,6 +167,7 @@ type State = {
   canRedo: () => boolean;
   setRecording: (running: boolean) => void;
   setRunning: (running: boolean) => void;
+  setActiveStep: (id: string | null) => void;
   appendLog: (entry: LogEntry) => void;
   clearLog: () => void;
 };
@@ -439,6 +443,7 @@ export const useStore = create<State>((set, get) => {
     dirty: false,
     recording: false,
     running: false,
+    activeStepId: null,
     log: [],
     undoStack: [],
     redoStack: [],
@@ -781,7 +786,13 @@ export const useStore = create<State>((set, get) => {
     },
 
     setRunning(running: boolean) {
-      set({ running });
+      // When a run ends, drop the active-step highlight so the timeline
+      // doesn't keep a stale "currently here" marker.
+      set(running ? { running } : { running, activeStepId: null });
+    },
+
+    setActiveStep(id: string | null) {
+      set({ activeStepId: id });
     },
 
     appendLog(entry: LogEntry) {

@@ -66,6 +66,9 @@ export function App() {
           });
           return;
         case 'run:step':
+          if (e.phase === 'start') {
+            s.setActiveStep(e.stepId);
+          }
           if (e.phase === 'end' && e.outcome !== 'completed') {
             s.appendLog({
               ts: Date.now(),

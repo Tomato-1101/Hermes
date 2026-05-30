@@ -117,6 +117,7 @@ function StepNode({
   path: string;
 }) {
   const selectedStepId = useStore((s) => s.selectedStepId);
+  const activeStepId = useStore((s) => s.activeStepId);
   const selectStep = useStore((s) => s.selectStep);
   const removeStep = useStore((s) => s.removeStep);
   const moveStep = useStore((s) => s.moveStep);
@@ -125,10 +126,13 @@ function StepNode({
 
   const isStructural =
     step.type === 'if' || step.type === 'loop' || step.type === 'try';
+  const isActive = activeStepId === step.id;
 
   return (
     <li
-      className={`step-node ${selectedStepId === step.id ? 'active' : ''} depth-${depth}`}
+      className={`step-node ${selectedStepId === step.id ? 'active' : ''} ${
+        isActive ? 'running' : ''
+      } depth-${depth}`}
       onClick={(e) => {
         e.stopPropagation();
         selectStep(step.id);
