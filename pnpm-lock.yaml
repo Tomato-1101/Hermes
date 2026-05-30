@@ -116,6 +116,31 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.19)
 
+  packages/cli:
+    dependencies:
+      '@hermes/desktop-adapter':
+        specifier: workspace:*
+        version: link:../desktop-adapter
+      '@hermes/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@hermes/ir':
+        specifier: workspace:*
+        version: link:../ir
+      '@hermes/web-provider':
+        specifier: workspace:*
+        version: link:../web-provider
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite-node:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.19)
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.19)
+
   packages/desktop-adapter:
     dependencies:
       '@hermes/engine':

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "1.0",
+  "id": "01KSSGV70H3WP7TB9QHHN61H2Z",
+  "name": "CLI smoke flow",
+  "createdAt": "2026-05-30T00:00:00.000Z",
+  "updatedAt": "2026-05-30T00:00:00.000Z",
+  "inputs": [],
+  "outputs": [],
+  "variables": [],
+  "defaults": {
+    "timeoutMs": 5000,
+    "retry": { "attempts": 1 },
+    "screenshotOnError": false,
+    "waitBetweenStepsMs": 0
+  },
+  "metadata": { "origin": "recorded", "targets": [], "requiredPermissions": [] },
+  "steps": [
+    {
+      "id": "01KSSGV8XNP2VB8ZSQZ6P771AW",
+      "type": "log",
+      "enabled": true,
+      "label": "start",
+      "params": { "level": "info", "message": "hermes CLI smoke: start" }
+    },
+    {
+      "id": "01KSSGV9THW74CFPAZN76RRXKE",
+      "type": "wait_for",
+      "enabled": true,
+      "label": "tiny wait",
+      "params": { "kind": "time", "ms": 5 }
+    },
+    {
+      "id": "01KSSGV9THW74CFPAZN76RRXKF",
+      "type": "loop",
+      "enabled": true,
+      "label": "loop twice",
+      "params": { "kind": "for", "count": 2 },
+      "children": [
+        {
+          "id": "01KSSGV9THW74CFPAZN76RRXKG",
+          "type": "log",
+          "enabled": true,
+          "params": { "message": "loop tick" }
+        }
+      ]
+    }
+  ]
+}
