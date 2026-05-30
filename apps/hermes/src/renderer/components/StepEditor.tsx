@@ -2,6 +2,12 @@ import { useState } from 'react';
 import { WAIT_FOR_KINDS, type WaitForKind } from '@hermes/ir';
 import { useStore, type Step } from '../store.js';
 import { WAIT_FOR_LABEL } from '../constants.js';
+import { HelpTip } from './HelpTip.js';
+
+const CONDITION_HELP =
+  'JS 風の式が書けます。var.x（変数）, secrets.x（シークレット）, env.X（環境変数）, ' +
+  '比較・論理演算子, contains / startsWith / endsWith / length / match などの関数が使えます。' +
+  '式として解釈できない文字列は、中身があれば成立（truthy）と判定します。';
 
 export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: Partial<Step>) => void }) {
   const params = (step.params ?? {}) as Record<string, unknown>;
@@ -48,10 +54,10 @@ export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: P
 
       {step.type === 'if' && (
         <>
-          <h4>if 条件</h4>
+          <h4>分岐の条件 <HelpTip text={CONDITION_HELP} /></h4>
           <ul className="kv">
             <li>
-              <span className="kv-key">condition</span>
+              <span className="kv-key">条件</span>
               <input
                 className="kv-value"
                 placeholder='例: var.score > 50 / contains(var.text, "OK")'
@@ -60,10 +66,6 @@ export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: P
               />
             </li>
           </ul>
-          <p className="muted small">
-            JS 風の式言語。<code>var.x</code>, <code>secrets.x</code>, <code>env.X</code>, 比較 / 論理演算子, <code>contains/startsWith/endsWith/length/match</code> 等が使えます。
-            式として解釈できない文字列は truthy/falsy 判定。
-          </p>
         </>
       )}
 
@@ -390,31 +392,31 @@ function WaitForEditor({
 
         {kind === 'web.load' && (
           <li>
-            <span className="kv-key">load state</span>
+            <span className="kv-key">読込の段階</span>
             <select
               className="kv-value"
               value={String(params['state'] ?? 'load')}
               onChange={(e) => setParam('state', e.target.value)}
             >
-              <option value="load">load (全リソース)</option>
-              <option value="domcontentloaded">domcontentloaded (DOM のみ)</option>
-              <option value="networkidle">networkidle (通信が止まる)</option>
+              <option value="load">全リソースの読込まで</option>
+              <option value="domcontentloaded">ページ構造の読込まで</option>
+              <option value="networkidle">通信が落ち着くまで</option>
             </select>
           </li>
         )}
 
         {kind === 'web.element' && (
           <li>
-            <span className="kv-key">state</span>
+            <span className="kv-key">どうなったら</span>
             <select
               className="kv-value"
               value={String(params['state'] ?? 'visible')}
               onChange={(e) => setParam('state', e.target.value)}
             >
-              <option value="attached">attached</option>
-              <option value="visible">visible</option>
-              <option value="hidden">hidden</option>
-              <option value="detached">detached</option>
+              <option value="attached">ページに追加された</option>
+              <option value="visible">表示された</option>
+              <option value="hidden">隠れた</option>
+              <option value="detached">ページから消えた</option>
             </select>
           </li>
         )}
@@ -471,7 +473,7 @@ function WaitForEditor({
 
         {kind === 'expr' && (
           <li>
-            <span className="kv-key">式 (jsep)</span>
+            <span className="kv-key">条件式 <HelpTip text={CONDITION_HELP} /></span>
             <input
               className="kv-value"
               placeholder="var.ready === true"

@@ -154,7 +154,7 @@ export function AppSettingsPanel() {
           </div>
           {appSettings.browser.mode === 'system-chrome' && (
             <p className="warn small" style={{ fontWeight: 600 }}>
-              ※ 「system-chrome」モードは Chrome が起動している間は再生できません。
+              ※ このモードは Chrome が起動している間は再生できません。
               再生前に必ず <kbd>Cmd</kbd>+<kbd>Q</kbd> で Chrome を完全終了してください。
             </p>
           )}

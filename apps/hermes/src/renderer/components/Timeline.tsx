@@ -2,7 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Fragment, useState } from 'react';
 import { type WaitForKind } from '@hermes/ir';
 import { useStore, type InsertKind, type Step } from '../store.js';
-import { INSERT_MENU, WAIT_FOR_LABEL } from '../constants.js';
+import { INSERT_MENU_COMMON, INSERT_MENU_ADVANCED, WAIT_FOR_LABEL } from '../constants.js';
 
 // ---------------------------------------------------------------------------
 // Recursive timeline — renders nested if/loop/try children + branches.
@@ -48,11 +48,15 @@ export function Timeline({
  */
 function InsertHandle({ beforeStepId }: { beforeStepId: string | null }) {
   const [open, setOpen] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const insertStepAt = useStore((s) => s.insertStepAt);
   const choose = (kind: InsertKind): void => {
     insertStepAt(beforeStepId, kind);
     setOpen(false);
+    setShowAdvanced(false);
   };
+  const menuKey = (kind: InsertKind): string =>
+    typeof kind === 'string' ? kind : `wf-${kind.kind}`;
   return (
     <li className="step-divider" onClick={(e) => e.stopPropagation()}>
       <button
@@ -60,7 +64,10 @@ function InsertHandle({ beforeStepId }: { beforeStepId: string | null }) {
         className="divider-add"
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((v) => !v);
+          setOpen((v) => {
+            if (v) setShowAdvanced(false);
+            return !v;
+          });
         }}
         title={beforeStepId ? 'ここにブロックを挿入' : '末尾にブロックを追加'}
       >
@@ -69,15 +76,27 @@ function InsertHandle({ beforeStepId }: { beforeStepId: string | null }) {
       {open && (
         <div className="divider-menu" onClick={(e) => e.stopPropagation()}>
           <div className="divider-section">待機・条件</div>
-          {INSERT_MENU.map((it) => (
-            <button
-              type="button"
-              key={typeof it.kind === 'string' ? it.kind : `wf-${it.kind.kind}`}
-              onClick={() => choose(it.kind)}
-            >
+          {INSERT_MENU_COMMON.map((it) => (
+            <button type="button" key={menuKey(it.kind)} onClick={() => choose(it.kind)}>
               {it.label}
             </button>
           ))}
+          <button
+            type="button"
+            className="divider-more"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowAdvanced((v) => !v);
+            }}
+          >
+            高度な待機 {showAdvanced ? '▾' : '▸'}
+          </button>
+          {showAdvanced &&
+            INSERT_MENU_ADVANCED.map((it) => (
+              <button type="button" key={menuKey(it.kind)} onClick={() => choose(it.kind)}>
+                {it.label}
+              </button>
+            ))}
           <div className="divider-section">構造</div>
           <button type="button" onClick={() => choose('if')}>+ if</button>
           <button type="button" onClick={() => choose('loop')}>+ loop</button>

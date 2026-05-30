@@ -165,6 +165,26 @@ body.platform-darwin .pane-left .pane-header {
 .ok { color: var(--ok); }
 .mono { font-family: var(--font-mono); }
 
+/* "?" help badge — surfaces explanatory text on hover (see HelpTip.tsx),
+   replacing always-on inline help paragraphs. */
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  color: var(--fg-muted);
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+}
+.help-tip:hover { border-color: var(--accent); color: var(--accent); }
+
 /* Flow sidebar */
 .flow-list { list-style: none; padding: 0; margin: 0; }
 .flow-list li {
@@ -367,6 +387,12 @@ body.platform-darwin .pane-left .pane-header {
   letter-spacing: 0.06em;
   padding: var(--space-2) var(--space-4) var(--space-1);
 }
+/* "高度な待機" disclosure row inside the insert popup. */
+.divider-menu button.divider-more {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+.divider-menu button.divider-more:hover { color: var(--accent); background: transparent; }
 
 /* Wait / wait_for editor specifics */
 .wait-row { display: flex; align-items: center; gap: var(--space-3); }

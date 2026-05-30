@@ -77,7 +77,7 @@ export function VaultPanel() {
         </ul>
       )}
       <p className="muted small">
-        IR には参照 <code>{`\${secrets.<name>}`}</code> だけが残ります。値は macOS Keychain に保存。
+        フローに保存されるのは参照 <code>{`\${secrets.<name>}`}</code> だけです。値は macOS キーチェーンに保存されます。
       </p>
     </section>
   );
