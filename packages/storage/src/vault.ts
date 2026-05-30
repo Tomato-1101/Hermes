@@ -83,8 +83,14 @@ function lazyKeytarBackend(): VaultBackend {
   let loaded: VaultBackend | undefined;
   const ensure = async (): Promise<VaultBackend> => {
     if (loaded) return loaded;
-    const mod = await import('keytar');
-    loaded = mod as unknown as VaultBackend;
+    // keytar is CommonJS (`module.exports = { ... }`), so an ESM dynamic
+    // import exposes its methods under `.default`, not on the namespace
+    // object itself — reach through it (falling back to the namespace for
+    // bundlers that already unwrap CJS default).
+    const mod = (await import('keytar')) as unknown as {
+      default?: VaultBackend;
+    } & VaultBackend;
+    loaded = (mod.default ?? mod) as VaultBackend;
     return loaded;
   };
   return {
