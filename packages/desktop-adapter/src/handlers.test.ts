@@ -6,7 +6,9 @@ import { HandlerRegistry, type RunContext, type StepHandler } from '@hermes/engi
 import type { Step } from '@hermes/ir';
 import { DesktopProvider } from './desktop-provider.js';
 import {
+  clipboardStepHandlers,
   desktopStepHandlers,
+  registerClipboardHandlers,
   registerDesktopHandlers,
   registerScreenHandlers,
   screenStepHandlers,
@@ -27,6 +29,8 @@ function fakeAdapter(overrides: Partial<DesktopAdapter> = {}): DesktopAdapter {
     screenshot: vi.fn(async () => Buffer.alloc(0)),
     findImageOnScreen: vi.fn(async () => ({ found: false, score: 0 })),
     readScreenText: vi.fn(async () => ({ text: '', observations: [] })),
+    readClipboard: vi.fn(async () => ''),
+    writeClipboard: vi.fn(async () => undefined),
     waitForState: vi.fn(async () => undefined),
     listApps: vi.fn(async () => []),
     focusApp: vi.fn(async () => undefined),
@@ -553,5 +557,67 @@ describe('screen step handlers', () => {
     expect(r.get('click', 'screen')).toBeDefined();
     expect(r.get('extract', 'screen')).toBeDefined();
     expect(r.get('click')).toBeUndefined(); // no default-layer handler
+  });
+});
+
+function getClipboardHandler(type: string): StepHandler {
+  const h = clipboardStepHandlers.find((h) => h.type === type);
+  if (!h) throw new Error(`clipboard handler ${type} not found`);
+  return h;
+}
+
+describe('clipboard step handlers', () => {
+  it('clipboard_write then clipboard_read round-trips a value through a variable', async () => {
+    // In-memory pasteboard shared by both handler calls.
+    let store = '';
+    const adapter = fakeAdapter({
+      writeClipboard: vi.fn(async (text: string) => {
+        store = text;
+      }),
+      readClipboard: vi.fn(async () => store),
+    });
+    const ctx = ctxFor(adapter);
+
+    const write: Step = {
+      id: 'cw',
+      type: 'clipboard_write',
+      enabled: true,
+      params: { value: 'コピーした値' },
+    };
+    await getClipboardHandler('clipboard_write').execute(write, ctx);
+    expect(adapter.writeClipboard).toHaveBeenCalledWith('コピーした値');
+
+    const read: Step = {
+      id: 'cr',
+      type: 'clipboard_read',
+      enabled: true,
+      params: { into: 'captured' },
+    };
+    const res = await getClipboardHandler('clipboard_read').execute(read, ctx);
+    expect(ctx.vars['captured']).toBe('コピーした値');
+    expect(res.data).toEqual({ value: 'コピーした値' });
+  });
+
+  it('clipboard_read returns "" and sets no var when into is omitted', async () => {
+    const adapter = fakeAdapter({ readClipboard: vi.fn(async () => 'on clipboard') });
+    const ctx = ctxFor(adapter);
+    const step: Step = { id: 'cr2', type: 'clipboard_read', enabled: true, params: {} };
+    const res = await getClipboardHandler('clipboard_read').execute(step, ctx);
+    expect(res.data).toEqual({ value: 'on clipboard' });
+    expect(Object.keys(ctx.vars)).toHaveLength(0);
+  });
+
+  it('clipboard_write defaults a missing value to an empty string', async () => {
+    const adapter = fakeAdapter();
+    const step: Step = { id: 'cw2', type: 'clipboard_write', enabled: true, params: {} };
+    await getClipboardHandler('clipboard_write').execute(step, ctxFor(adapter));
+    expect(adapter.writeClipboard).toHaveBeenCalledWith('');
+  });
+
+  it('registerClipboardHandlers adds read + write under the default layer', () => {
+    const r = new HandlerRegistry();
+    registerClipboardHandlers(r);
+    expect(r.get('clipboard_read')).toBeDefined();
+    expect(r.get('clipboard_write')).toBeDefined();
   });
 });

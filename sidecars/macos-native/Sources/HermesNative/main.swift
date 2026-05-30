@@ -350,6 +350,21 @@ let handlers: [String: Handler] = [
         }
     },
 
+    "clipboard.read": { _ in
+        return .object(["text": .string(clipboardReadText())])
+    },
+
+    "clipboard.write": { params in
+        let p = paramsObject(params)
+        let text = (p?["text"]).flatMap { stringValue($0) } ?? ""
+        do {
+            try clipboardWriteText(text)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "clipboard.write failed: \(error)")
+        }
+    },
+
     "recording.start": { _ in
         do {
             try Recorder.shared.start()

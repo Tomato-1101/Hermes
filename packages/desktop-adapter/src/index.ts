@@ -187,6 +187,12 @@ export interface DesktopAdapter {
     opts?: WaitOpts,
   ): Promise<void>;
 
+  // --- clipboard ---
+  /** Read the OS clipboard as plain text ("" when it holds no text). */
+  readClipboard(): Promise<string>;
+  /** Replace the OS clipboard contents with `text`. */
+  writeClipboard(text: string): Promise<void>;
+
   // --- apps / windows ---
   listApps(): Promise<AppInfo[]>;
   focusApp(ref: AppRef): Promise<void>;

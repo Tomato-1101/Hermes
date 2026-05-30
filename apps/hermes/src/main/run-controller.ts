@@ -25,7 +25,11 @@ import { Vault } from '@hermes/storage';
 import { collectSecretRefs } from '@hermes/ir';
 import { MacosDesktopAdapter } from '@hermes/desktop-adapter/macos';
 import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
-import { registerDesktopHandlers, registerScreenHandlers } from '@hermes/desktop-adapter/handlers';
+import {
+  registerClipboardHandlers,
+  registerDesktopHandlers,
+  registerScreenHandlers,
+} from '@hermes/desktop-adapter/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
 import { getSidecarClient } from './sidecar.js';
 import { DesktopRecorder } from './desktop-recorder.js';
@@ -385,7 +389,10 @@ export class RunController {
     // they imply the desktop provider too — but they additionally need the
     // screen handlers registered and an assets dir for image templates.
     const needsScreen = flow.steps.some(stepNeedsLayer('screen'));
-    const needsDesktop = needsScreen || flow.steps.some(stepNeedsLayer('desktop'));
+    // Clipboard steps are targetless but also ride the sidecar.
+    const needsClipboard = flow.steps.some(stepUsesClipboard);
+    const needsDesktop =
+      needsScreen || needsClipboard || flow.steps.some(stepNeedsLayer('desktop'));
 
     // Log the decision so the user can see in the log panel WHY a provider
     // is (or isn't) about to start. If "browser opens on a desktop-only
@@ -439,6 +446,7 @@ export class RunController {
     registerWebHandlers(registry);
     if (this.desktop) registerDesktopHandlers(registry);
     if (this.desktop && needsScreen) registerScreenHandlers(registry);
+    if (this.desktop && needsClipboard) registerClipboardHandlers(registry);
 
     // Pre-fetch every secret the flow references so the engine can
     // interpolate without itself touching keytar. Unknown secrets resolve
@@ -689,6 +697,14 @@ function stepNeedsLayer(layer: 'web' | 'desktop' | 'screen'): (s: Step) => boole
     }
     return false;
   };
+}
+
+/** Clipboard steps are targetless, so detection is by step type (recursive). */
+function stepUsesClipboard(step: Step): boolean {
+  if (step.type === 'clipboard_read' || step.type === 'clipboard_write') return true;
+  if (step.children && step.children.some(stepUsesClipboard)) return true;
+  if (step.branches && step.branches.some((b) => b.steps.some(stepUsesClipboard))) return true;
+  return false;
 }
 
 /**

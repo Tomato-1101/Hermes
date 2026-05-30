@@ -388,3 +388,45 @@ export const screenStepHandlers: StepHandler[] = [
 export function registerScreenHandlers(registry: HandlerRegistry): void {
   for (const h of screenStepHandlers) registry.register(h, 'screen');
 }
+
+// ---------------------------------------------------------------------------
+// Clipboard — OS pasteboard read/write (rides the desktop sidecar)
+// ---------------------------------------------------------------------------
+
+/**
+ * Clipboard steps have no `target` (the clipboard is a single system
+ * resource), so they resolve under the `default` layer. They still need the
+ * desktop sidecar, so the runner must build the desktop provider whenever a
+ * flow contains one.
+ *
+ * `settleMs` is the OS reflection wait: a `clipboard_read` after a Cmd+C waits
+ * BEFORE reading so the copy has landed; a `clipboard_write` before a Cmd+V
+ * waits AFTER writing so the paste sees the new contents. Both default to 0.
+ */
+const sleep = (ms: number): Promise<void> =>
+  ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
+
+export const clipboardStepHandlers: StepHandler[] = [
+  makeHandler('clipboard_read', async (step, ctx) => {
+    const settleMs = Math.max(0, Number(step.params?.['settleMs'] ?? 0));
+    await sleep(settleMs);
+    const text = await adapter(ctx).readClipboard();
+    const into = String(step.params?.['into'] ?? '');
+    if (into) ctx.vars[into] = text;
+    return { outcome: 'completed', data: { value: text } };
+  }),
+
+  makeHandler('clipboard_write', async (step, ctx) => {
+    // `value` is already interpolated by the engine (e.g. "${var.captured}").
+    const value = String(step.params?.['value'] ?? '');
+    await adapter(ctx).writeClipboard(value);
+    const settleMs = Math.max(0, Number(step.params?.['settleMs'] ?? 0));
+    await sleep(settleMs);
+    return { outcome: 'completed' };
+  }),
+];
+
+/** Convenience: register the clipboard handlers under the `default` layer. */
+export function registerClipboardHandlers(registry: HandlerRegistry): void {
+  for (const h of clipboardStepHandlers) registry.register(h);
+}

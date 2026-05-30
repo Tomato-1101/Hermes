@@ -77,6 +77,8 @@ export type StepType =
   | 'wait_for'
   | 'screenshot'
   | 'extract'
+  | 'clipboard_read'
+  | 'clipboard_write'
   | 'set_var'
   | 'if'
   | 'loop'

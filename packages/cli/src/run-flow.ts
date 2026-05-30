@@ -62,11 +62,11 @@ export async function runFlow(flow: Flow, opts: RunFlowOptions = {}): Promise<Ru
     registerWebHandlers(registry);
   }
   if (layers.desktop) {
-    const { registerDesktopHandlers, registerScreenHandlers } = await import(
-      '@hermes/desktop-adapter/handlers'
-    );
+    const { registerDesktopHandlers, registerScreenHandlers, registerClipboardHandlers } =
+      await import('@hermes/desktop-adapter/handlers');
     registerDesktopHandlers(registry);
     if (layers.screen) registerScreenHandlers(registry);
+    if (layers.clipboard) registerClipboardHandlers(registry);
   }
 
   const handles = await buildProviders(layers, opts.providers);

@@ -7,6 +7,10 @@ export interface LayerUsage {
    * `desktop` is also set, but the runner needs this to register the screen
    * handlers in addition to the desktop ones. */
   screen: boolean;
+  /** Clipboard steps (clipboard_read / clipboard_write). Targetless, so they
+   * resolve under the default layer, but ride the desktop sidecar — `desktop`
+   * is also set so the provider gets built. */
+  clipboard: boolean;
 }
 
 /**
@@ -17,9 +21,14 @@ export interface LayerUsage {
  * so they set `desktop` too.
  */
 export function collectLayers(flow: Flow): LayerUsage {
-  const usage: LayerUsage = { web: false, desktop: false, screen: false };
+  const usage: LayerUsage = { web: false, desktop: false, screen: false, clipboard: false };
   const walk = (steps: Step[]): void => {
     for (const step of steps) {
+      // Clipboard steps are targetless but ride the desktop sidecar.
+      if (step.type === 'clipboard_read' || step.type === 'clipboard_write') {
+        usage.clipboard = true;
+        usage.desktop = true;
+      }
       // Widen to string so comparing against 'screen' stays legal even if the
       // TargetRef.layer union doesn't list it.
       const layer: string | undefined = step.target?.layer;

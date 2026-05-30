@@ -290,6 +290,26 @@ describe('MacosDesktopAdapter', () => {
     });
   });
 
+  it('readClipboard maps clipboard.read result text', async () => {
+    const client = makeFakeClient({ 'clipboard.read': () => ({ text: 'on board ✂︎' }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    expect(await adapter.readClipboard()).toBe('on board ✂︎');
+    expect(client.call).toHaveBeenCalledWith('clipboard.read');
+  });
+
+  it('readClipboard returns "" when the sidecar reports no text', async () => {
+    const client = makeFakeClient({ 'clipboard.read': () => ({ text: '' }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    expect(await adapter.readClipboard()).toBe('');
+  });
+
+  it('writeClipboard sends the text to clipboard.write', async () => {
+    const client = makeFakeClient({ 'clipboard.write': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.writeClipboard('値 to copy');
+    expect(client.call).toHaveBeenCalledWith('clipboard.write', { text: '値 to copy' });
+  });
+
   it('focusApp still throws not-yet-implemented', async () => {
     const client = makeFakeClient({});
     const adapter = new MacosDesktopAdapter({ client });

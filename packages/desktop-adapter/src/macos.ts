@@ -343,6 +343,17 @@ export class MacosDesktopAdapter implements DesktopAdapter {
     throw new DesktopAdapterError('waitForState: predicate did not become true within timeout', 'timeout');
   }
 
+  // --- clipboard ---------------------------------------------------------
+
+  async readClipboard(): Promise<string> {
+    const res = (await this.client.call('clipboard.read')) as { text?: string } | null;
+    return res?.text ?? '';
+  }
+
+  async writeClipboard(text: string): Promise<void> {
+    await this.client.call('clipboard.write', { text });
+  }
+
   // --- apps / windows ----------------------------------------------------
 
   async listApps(): Promise<AppInfo[]> {

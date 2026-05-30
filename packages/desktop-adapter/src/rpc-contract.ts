@@ -280,6 +280,16 @@ export const RPC_CONTRACT = {
     result: OkResult,
   },
 
+  'clipboard.read': {
+    params: NoParams,
+    // Always a string; "" when the pasteboard holds no text.
+    result: z.object({ text: z.string() }),
+  },
+  'clipboard.write': {
+    params: z.object({ text: z.string() }),
+    result: OkResult,
+  },
+
   'recording.start': {
     params: NoParams,
     result: OkResult,

@@ -42,7 +42,7 @@ describe('collectLayers', () => {
       log('a'),
       { id: newId(), type: 'wait_for', enabled: true, params: { kind: 'time', ms: 1 } },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false });
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
   });
 
   it('detects web from open_url', () => {
@@ -72,7 +72,12 @@ describe('collectLayers', () => {
         ],
       },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: true, screen: false });
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: false,
+    });
   });
 
   it('detects screen (and desktop) from a screen-layer step', () => {
@@ -87,7 +92,25 @@ describe('collectLayers', () => {
         },
       },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: true, screen: true });
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: true,
+      clipboard: false,
+    });
+  });
+
+  it('detects clipboard (and desktop) from targetless clipboard steps', () => {
+    const flow = flowOf([
+      { id: newId(), type: 'clipboard_write', enabled: true, params: { value: '${var.x}' } },
+      { id: newId(), type: 'clipboard_read', enabled: true, params: { into: 'y' } },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: true,
+    });
   });
 });
 
@@ -114,7 +137,7 @@ describe('runFlow — provider-less execution', () => {
     const events: RunEvent[] = [];
     const result = await runFlow(flow, { onEvent: (e) => events.push(e) });
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false, screen: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
     expect(events.some((e) => e.type === 'run:end' && e.outcome === 'success')).toBe(true);
     // start + then-branch + 2 loop ticks
     expect(events.filter((e) => e.type === 'log').length).toBeGreaterThanOrEqual(4);
@@ -164,6 +187,6 @@ describe('loadFlow', () => {
     const fixture = fileURLToPath(new URL('../fixtures/smoke.flow.json', import.meta.url));
     const result = await runFlowFile(fixture);
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false, screen: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
   });
 });
