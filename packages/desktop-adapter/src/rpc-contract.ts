@@ -213,6 +213,21 @@ export const RPC_CONTRACT = {
       durationMs: z.number(),
     }),
   },
+  'mouse.scroll': {
+    params: z.object({ x: Coord, y: Coord, dx: Coord, dy: Coord }),
+    result: OkResult,
+  },
+  'mouse.drag': {
+    params: z.object({
+      fromX: Coord,
+      fromY: Coord,
+      toX: Coord,
+      toY: Coord,
+      durationMs: z.number().optional(),
+      steps: z.number().optional(),
+    }),
+    result: OkResult,
+  },
 
   'keyboard.type': {
     params: z.object({ text: z.string(), intervalMs: z.number().optional() }),

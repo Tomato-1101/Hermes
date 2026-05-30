@@ -197,11 +197,43 @@ describe('MacosDesktopAdapter', () => {
     expect(apps[1]?.active).toBe(false);
   });
 
-  it('scroll/drag/focusApp throw not-yet-implemented errors', async () => {
+  it('scroll translates into mouse.scroll RPC at the target point', async () => {
+    const client = makeFakeClient({ 'mouse.scroll': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.scroll({ x: 120, y: 240 }, 0, -30);
+    expect(client.call).toHaveBeenCalledWith('mouse.scroll', { x: 120, y: 240, dx: 0, dy: -30 });
+  });
+
+  it('scroll uses element center when a handle is passed', async () => {
+    const client = makeFakeClient({ 'mouse.scroll': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.scroll(
+      {
+        selectorEcho: { kind: 'coords', x: 0, y: 0, anchor: 'screen' },
+        bbox: { x: 10, y: 20, w: 40, h: 80 },
+        role: 'list',
+      },
+      5,
+      10,
+    );
+    expect(client.call).toHaveBeenCalledWith('mouse.scroll', { x: 30, y: 60, dx: 5, dy: 10 });
+  });
+
+  it('drag translates into mouse.drag RPC with from/to endpoints', async () => {
+    const client = makeFakeClient({ 'mouse.drag': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.drag({ x: 10, y: 20 }, { x: 200, y: 300 });
+    expect(client.call).toHaveBeenCalledWith('mouse.drag', {
+      fromX: 10,
+      fromY: 20,
+      toX: 200,
+      toY: 300,
+    });
+  });
+
+  it('focusApp still throws not-yet-implemented', async () => {
     const client = makeFakeClient({});
     const adapter = new MacosDesktopAdapter({ client });
-    await expect(adapter.scroll({ x: 0, y: 0 }, 0, 10)).rejects.toBeInstanceOf(DesktopAdapterError);
-    await expect(adapter.drag({ x: 0, y: 0 }, { x: 0, y: 1 })).rejects.toBeInstanceOf(DesktopAdapterError);
     await expect(adapter.focusApp({ bundleId: 'x' })).rejects.toBeInstanceOf(DesktopAdapterError);
   });
 

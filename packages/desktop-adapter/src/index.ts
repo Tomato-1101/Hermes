@@ -133,7 +133,7 @@ export interface DesktopAdapter {
   click(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   doubleClick(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   rightClick(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
-  hover(target: ElementHandle | Point): Promise<void>;
+  hover(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   type(text: string, opts?: TypeOpts): Promise<void>;
   keyCombo(keys: ReadonlyArray<string>): Promise<void>;
   scroll(target: ElementHandle | Point, dx: number, dy: number): Promise<void>;

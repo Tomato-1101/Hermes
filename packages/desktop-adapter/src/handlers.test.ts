@@ -132,6 +132,62 @@ describe('desktop step handlers', () => {
     expect(adapter.keyCombo).toHaveBeenCalledWith(['primary', 's']);
   });
 
+  it('scroll routes to adapter.scroll with coords and dx/dy', async () => {
+    const adapter = fakeAdapter();
+    const step: Step = {
+      id: 'ss',
+      type: 'scroll',
+      enabled: true,
+      target: { layer: 'desktop', candidates: [{ kind: 'coords', x: 50, y: 60, anchor: 'screen' }] },
+      params: { dx: 0, dy: -120 },
+    };
+    await getHandler('scroll').execute(step, ctxFor(adapter));
+    expect(adapter.scroll).toHaveBeenCalledWith({ x: 50, y: 60 }, 0, -120);
+  });
+
+  it('drag routes to adapter.drag with from-target and params.to', async () => {
+    const adapter = fakeAdapter();
+    const step: Step = {
+      id: 'sd',
+      type: 'drag',
+      enabled: true,
+      target: { layer: 'desktop', candidates: [{ kind: 'coords', x: 10, y: 20, anchor: 'screen' }] },
+      params: { to: { x: 300, y: 400 } },
+    };
+    await getHandler('drag').execute(step, ctxFor(adapter));
+    expect(adapter.drag).toHaveBeenCalledWith({ x: 10, y: 20 }, { x: 300, y: 400 });
+  });
+
+  it('drag throws when params.to is missing or malformed', async () => {
+    const adapter = fakeAdapter();
+    const step: Step = {
+      id: 'sd2',
+      type: 'drag',
+      enabled: true,
+      target: { layer: 'desktop', candidates: [{ kind: 'coords', x: 10, y: 20, anchor: 'screen' }] },
+      params: {},
+    };
+    await expect(getHandler('drag').execute(step, ctxFor(adapter))).rejects.toThrow(/params\.to/);
+    expect(adapter.drag).not.toHaveBeenCalled();
+  });
+
+  it('click with action=hover routes to adapter.hover (no press)', async () => {
+    const adapter = fakeAdapter();
+    const step: Step = {
+      id: 'sh',
+      type: 'click',
+      enabled: true,
+      target: { layer: 'desktop', candidates: [{ kind: 'coords', x: 70, y: 80, anchor: 'screen' }] },
+      params: { action: 'hover' },
+    };
+    await getHandler('click').execute(step, ctxFor(adapter));
+    expect(adapter.hover).toHaveBeenCalledWith(
+      { x: 70, y: 80 },
+      { speedPxPerSec: 800, minSteps: 16, maxSteps: 1200 },
+    );
+    expect(adapter.click).not.toHaveBeenCalled();
+  });
+
   it('wait_for resolves when findElement returns a handle', async () => {
     const handle = {
       selectorEcho: { kind: 'coords' as const, x: 0, y: 0, anchor: 'screen' as const },

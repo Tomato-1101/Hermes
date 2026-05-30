@@ -72,6 +72,7 @@ export type StepType =
   | 'type'
   | 'key_combo'
   | 'scroll'
+  | 'drag'
   | 'wait'
   | 'wait_for'
   | 'screenshot'

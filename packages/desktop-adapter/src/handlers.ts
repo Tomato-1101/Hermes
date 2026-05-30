@@ -85,6 +85,19 @@ function selectorFromTarget(target: TargetRef | undefined): DesktopSelector {
 export const desktopStepHandlers: StepHandler[] = [
   makeHandler('click', async (step, ctx) => {
     const pt = coordsFromTarget(step.target);
+    // 'hover' is a move-only click variant: position the cursor on the target
+    // without pressing. Lets a recording or hand-edit express hover without a
+    // dedicated step type.
+    if (step.params?.['action'] === 'hover') {
+      const hh = humanizeSettings(ctx);
+      await adapter(ctx).hover(pt, {
+        speedPxPerSec: (step.params?.['mouseSpeedPxPerSec'] as number | undefined) ?? hh.mouseSpeedPxPerSec,
+        minSteps: hh.mouseMinSteps,
+        maxSteps: hh.mouseMaxSteps,
+        ...(step.params?.['instant'] === true ? { instant: true } : {}),
+      });
+      return { outcome: 'completed' };
+    }
     const button = step.params?.['button'] as 'left' | 'right' | 'middle' | undefined;
     const clicks = step.params?.['clickCount'] as 1 | 2 | 3 | undefined;
     const speedOverride = step.params?.['mouseSpeedPxPerSec'] as number | undefined;
@@ -127,6 +140,24 @@ export const desktopStepHandlers: StepHandler[] = [
     if (!Array.isArray(keys) || keys.length === 0)
       throw new Error('key_combo requires params.keys[]');
     await adapter(ctx).keyCombo(keys.map(String));
+    return { outcome: 'completed' };
+  }),
+
+  makeHandler('scroll', async (step, ctx) => {
+    const pt = coordsFromTarget(step.target);
+    const dx = Number(step.params?.['dx'] ?? 0);
+    const dy = Number(step.params?.['dy'] ?? 0);
+    await adapter(ctx).scroll(pt, dx, dy);
+    return { outcome: 'completed' };
+  }),
+
+  makeHandler('drag', async (step, ctx) => {
+    const from = coordsFromTarget(step.target);
+    const to = step.params?.['to'] as { x?: unknown; y?: unknown } | undefined;
+    if (!to || typeof to.x !== 'number' || typeof to.y !== 'number') {
+      throw new Error('drag step requires params.to = { x, y }');
+    }
+    await adapter(ctx).drag(from, { x: to.x, y: to.y });
     return { outcome: 'completed' };
   }),
 

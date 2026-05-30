@@ -52,6 +52,59 @@ func postMouseMove(x: Double, y: Double) throws {
     event.post(tap: .cghidEventTap)
 }
 
+/// Scroll the wheel by pixel deltas at (x, y). The cursor is moved there
+/// first so the scroll lands on the window under it. CGEvent wheel axes run
+/// opposite to screen-space motion: a positive wheel1 scrolls content up, so
+/// we negate the caller's dy (screen-space, y-down) to keep "dy > 0 scrolls
+/// down". wheel1 is vertical, wheel2 horizontal.
+func postScroll(x: Double, y: Double, dx: Double, dy: Double) throws {
+    let point = CGPoint(x: x, y: y)
+    if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) {
+        move.post(tap: .cghidEventTap)
+    }
+    guard let scroll = CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .pixel,
+        wheelCount: 2,
+        wheel1: Int32(-dy),
+        wheel2: Int32(-dx),
+        wheel3: 0
+    ) else {
+        throw InputError.eventCreationFailed
+    }
+    scroll.location = point
+    scroll.post(tap: .cghidEventTap)
+}
+
+/// Press at (fromX, fromY), drag through `steps` interpolated moves to
+/// (toX, toY) over roughly `durationMs`, then release. Linear interpolation
+/// is enough for RPA — only the press/drag/release sequence and the endpoints
+/// matter, not the exact path curvature.
+func postDrag(fromX: Double, fromY: Double, toX: Double, toY: Double, durationMs: Int, steps: Int) throws {
+    let from = CGPoint(x: fromX, y: fromY)
+    let to = CGPoint(x: toX, y: toY)
+    let n = max(1, steps)
+    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left) else {
+        throw InputError.eventCreationFailed
+    }
+    down.post(tap: .cghidEventTap)
+    let stepDelayUs = UInt32(max(0, durationMs) * 1000 / n)
+    for i in 1...n {
+        let t = Double(i) / Double(n)
+        let px = fromX + (toX - fromX) * t
+        let py = fromY + (toY - fromY) * t
+        guard let dragged = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: CGPoint(x: px, y: py), mouseButton: .left) else {
+            throw InputError.eventCreationFailed
+        }
+        dragged.post(tap: .cghidEventTap)
+        if stepDelayUs > 0 { usleep(stepDelayUs) }
+    }
+    guard let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left) else {
+        throw InputError.eventCreationFailed
+    }
+    up.post(tap: .cghidEventTap)
+}
+
 /// Return the current cursor location in Quartz coordinates (origin
 /// top-left, matching CGEvent's coordinate space). NSEvent.mouseLocation
 /// is Cocoa (origin bottom-left of the screen frame), so we flip Y against

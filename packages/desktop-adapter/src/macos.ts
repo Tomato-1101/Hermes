@@ -232,18 +232,15 @@ export class MacosDesktopAdapter implements DesktopAdapter {
     await this.client.call('keyboard.combo', { keys: Array.from(keys) });
   }
 
-  async scroll(_target: ElementHandle | Point, _dx: number, _dy: number): Promise<void> {
-    throw new DesktopAdapterError(
-      'MacosDesktopAdapter.scroll: not yet implemented (needs sidecar scroll RPC)',
-      'unknown',
-    );
+  async scroll(target: ElementHandle | Point, dx: number, dy: number): Promise<void> {
+    const { x, y } = targetPoint(target);
+    await this.client.call('mouse.scroll', { x, y, dx, dy });
   }
 
-  async drag(_from: ElementHandle | Point, _to: ElementHandle | Point): Promise<void> {
-    throw new DesktopAdapterError(
-      'MacosDesktopAdapter.drag: not yet implemented (needs sidecar drag RPC)',
-      'unknown',
-    );
+  async drag(from: ElementHandle | Point, to: ElementHandle | Point): Promise<void> {
+    const a = targetPoint(from);
+    const b = targetPoint(to);
+    await this.client.call('mouse.drag', { fromX: a.x, fromY: a.y, toX: b.x, toY: b.y });
   }
 
   // --- observation -------------------------------------------------------

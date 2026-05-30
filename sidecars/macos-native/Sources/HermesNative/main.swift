@@ -237,6 +237,37 @@ let handlers: [String: Handler] = [
         }
     },
 
+    "mouse.scroll": { params in
+        let (x, y) = try requireXY(params)
+        let p = paramsObject(params)
+        let dx = (p?["dx"]).flatMap { doubleValue($0) } ?? 0
+        let dy = (p?["dy"]).flatMap { doubleValue($0) } ?? 0
+        do {
+            try postScroll(x: x, y: y, dx: dx, dy: dy)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "scroll failed: \(error)")
+        }
+    },
+
+    "mouse.drag": { params in
+        let p = paramsObject(params)
+        guard let fromX = (p?["fromX"]).flatMap({ doubleValue($0) }),
+              let fromY = (p?["fromY"]).flatMap({ doubleValue($0) }),
+              let toX = (p?["toX"]).flatMap({ doubleValue($0) }),
+              let toY = (p?["toY"]).flatMap({ doubleValue($0) }) else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing fromX/fromY/toX/toY")
+        }
+        let durationMs = (p?["durationMs"]).flatMap { intValue($0) } ?? 300
+        let steps = (p?["steps"]).flatMap { intValue($0) } ?? 24
+        do {
+            try postDrag(fromX: fromX, fromY: fromY, toX: toX, toY: toY, durationMs: durationMs, steps: steps)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "drag failed: \(error)")
+        }
+    },
+
     "keyboard.type": { params in
         let p = paramsObject(params)
         guard let text = (p?["text"]).flatMap({ stringValue($0) }) else {

@@ -120,6 +120,7 @@ export const flowJsonSchema = {
             'type',
             'key_combo',
             'scroll',
+            'drag',
             'wait',
             'wait_for',
             'screenshot',
