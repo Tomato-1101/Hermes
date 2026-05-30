@@ -22,6 +22,7 @@
   "dependencies": {
     "@hermes/desktop-adapter": "workspace:*",
     "@hermes/engine": "workspace:*",
+    "@hermes/excel-provider": "workspace:*",
     "@hermes/ir": "workspace:*",
     "@hermes/web-provider": "workspace:*"
   },

@@ -68,6 +68,10 @@ export async function runFlow(flow: Flow, opts: RunFlowOptions = {}): Promise<Ru
     if (layers.screen) registerScreenHandlers(registry);
     if (layers.clipboard) registerClipboardHandlers(registry);
   }
+  if (layers.excel) {
+    const { registerExcelHandlers } = await import('@hermes/excel-provider/handlers');
+    registerExcelHandlers(registry);
+  }
 
   const handles = await buildProviders(layers, opts.providers);
   try {

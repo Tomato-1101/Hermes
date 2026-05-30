@@ -11,6 +11,9 @@ export interface LayerUsage {
    * resolve under the default layer, but ride the desktop sidecar — `desktop`
    * is also set so the provider gets built. */
   clipboard: boolean;
+  /** Excel steps (excel_open/read/write/range). Targetless, OS-independent;
+   * the runner builds the exceljs provider when set. */
+  excel: boolean;
 }
 
 /**
@@ -21,7 +24,13 @@ export interface LayerUsage {
  * so they set `desktop` too.
  */
 export function collectLayers(flow: Flow): LayerUsage {
-  const usage: LayerUsage = { web: false, desktop: false, screen: false, clipboard: false };
+  const usage: LayerUsage = {
+    web: false,
+    desktop: false,
+    screen: false,
+    clipboard: false,
+    excel: false,
+  };
   const walk = (steps: Step[]): void => {
     for (const step of steps) {
       // Clipboard steps are targetless but ride the desktop sidecar.
@@ -29,6 +38,8 @@ export function collectLayers(flow: Flow): LayerUsage {
         usage.clipboard = true;
         usage.desktop = true;
       }
+      // Excel steps are targetless and OS-independent (no sidecar).
+      if (step.type.startsWith('excel_')) usage.excel = true;
       // Widen to string so comparing against 'screen' stays legal even if the
       // TargetRef.layer union doesn't list it.
       const layer: string | undefined = step.target?.layer;

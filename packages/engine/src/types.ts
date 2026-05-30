@@ -21,6 +21,7 @@ export interface RunContext {
 export interface ProviderBag {
   web?: WebProviderHandle;
   desktop?: DesktopProviderHandle;
+  excel?: ExcelProviderHandle;
   ai?: AiServiceHandle;
 }
 
@@ -30,6 +31,9 @@ export interface WebProviderHandle {
 }
 export interface DesktopProviderHandle {
   readonly kind: 'desktop';
+}
+export interface ExcelProviderHandle {
+  readonly kind: 'excel';
 }
 export interface AiServiceHandle {
   readonly kind: 'ai';

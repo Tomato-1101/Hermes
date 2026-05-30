@@ -42,7 +42,7 @@ describe('collectLayers', () => {
       log('a'),
       { id: newId(), type: 'wait_for', enabled: true, params: { kind: 'time', ms: 1 } },
     ]);
-    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
   });
 
   it('detects web from open_url', () => {
@@ -77,6 +77,7 @@ describe('collectLayers', () => {
       desktop: true,
       screen: false,
       clipboard: false,
+      excel: false,
     });
   });
 
@@ -97,6 +98,7 @@ describe('collectLayers', () => {
       desktop: true,
       screen: true,
       clipboard: false,
+      excel: false,
     });
   });
 
@@ -110,6 +112,21 @@ describe('collectLayers', () => {
       desktop: true,
       screen: false,
       clipboard: true,
+      excel: false,
+    });
+  });
+
+  it('detects excel from targetless excel steps (no desktop)', () => {
+    const flow = flowOf([
+      { id: newId(), type: 'excel_open', enabled: true, params: { path: 'data.xlsx' } },
+      { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A1', into: 'v' } },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: false,
+      screen: false,
+      clipboard: false,
+      excel: true,
     });
   });
 });
@@ -137,7 +154,7 @@ describe('runFlow — provider-less execution', () => {
     const events: RunEvent[] = [];
     const result = await runFlow(flow, { onEvent: (e) => events.push(e) });
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
     expect(events.some((e) => e.type === 'run:end' && e.outcome === 'success')).toBe(true);
     // start + then-branch + 2 loop ticks
     expect(events.filter((e) => e.type === 'log').length).toBeGreaterThanOrEqual(4);
@@ -187,6 +204,24 @@ describe('loadFlow', () => {
     const fixture = fileURLToPath(new URL('../fixtures/smoke.flow.json', import.meta.url));
     const result = await runFlowFile(fixture);
     expect(result.outcome).toBe('success');
-    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false });
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
+  });
+
+  it('validates the Excel key-send recipe fixture and routes it to the desktop layer', async () => {
+    // The recipe is a documented sample (Windows Excel shortcuts); we only
+    // assert it is a structurally valid Flow and its key_combo steps route to
+    // the desktop sidecar — functional replay is deferred to Windows (§5).
+    const fixture = fileURLToPath(
+      new URL('../fixtures/excel-keysend-postal-sort.flow.json', import.meta.url),
+    );
+    const flow = await loadFlow(fixture);
+    expect(flow.steps).toHaveLength(10);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: false,
+      excel: false,
+    });
   });
 });

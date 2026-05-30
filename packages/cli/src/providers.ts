@@ -67,6 +67,13 @@ export async function buildProviders(
     });
   }
 
+  if (usage.excel) {
+    const { createExcelProvider } = await import('@hermes/excel-provider');
+    const excel = createExcelProvider();
+    providers.excel = excel;
+    teardown.push(() => excel.dispose());
+  }
+
   return {
     providers,
     dispose: async () => {
