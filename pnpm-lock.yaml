@@ -124,6 +124,9 @@ importers:
       '@hermes/ir':
         specifier: workspace:*
         version: link:../ir
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
     devDependencies:
       typescript:
         specifier: ^5.7.0

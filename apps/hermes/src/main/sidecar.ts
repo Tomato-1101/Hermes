@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app } from 'electron';
 import type { z } from 'zod';
+import { wrapWithContract } from '@hermes/desktop-adapter';
 import type { SidecarPingResult } from '../shared/ipc.js';
 
 export type SidecarPing = z.infer<typeof SidecarPingResult>;
@@ -244,10 +245,16 @@ const singleton = new Sidecar();
  * first call.
  */
 export function getSidecarClient(): { call: (m: string, p?: unknown, t?: number) => Promise<unknown>; dispose: () => void } {
-  return {
-    call: (method, params, timeoutMs) => singleton.call(method, params, timeoutMs),
+  const handle = {
+    call: (method: string, params?: unknown, timeoutMs?: number) =>
+      singleton.call(method, params, timeoutMs),
     dispose: () => singleton.dispose(),
   };
+  // Police every desktop RPC against the zod contract. Params throw on
+  // violation (a malformed request is our own bug, caught early); results
+  // only warn, so a benign extra/changed field never kills a live run.
+  // See packages/desktop-adapter/src/rpc-contract.ts.
+  return wrapWithContract(handle, { result: 'warn' });
 }
 
 export async function pingSidecar(): Promise<SidecarPing> {

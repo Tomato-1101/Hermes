@@ -10,7 +10,8 @@
     "./macos": "./src/macos.ts",
     "./sidecar-client": "./src/sidecar-client.ts",
     "./desktop-provider": "./src/desktop-provider.ts",
-    "./handlers": "./src/handlers.ts"
+    "./handlers": "./src/handlers.ts",
+    "./rpc-contract": "./src/rpc-contract.ts"
   },
   "scripts": {
     "lint": "eslint src",
@@ -21,7 +22,8 @@
   },
   "dependencies": {
     "@hermes/engine": "workspace:*",
-    "@hermes/ir": "workspace:*"
+    "@hermes/ir": "workspace:*",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

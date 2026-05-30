@@ -8,6 +8,10 @@
 
 import type { AppRef, Rect } from '@hermes/ir';
 
+// The zod-validated sidecar JSON-RPC contract (method names, params, results,
+// coordinate + key-name conventions) and its opt-in validating client wrapper.
+export * from './rpc-contract.js';
+
 export type Modifier = 'shift' | 'alt' | 'ctrl' | 'cmd' | 'primary';
 
 export type MouseButton = 'left' | 'right' | 'middle';
