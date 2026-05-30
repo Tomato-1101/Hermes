@@ -169,6 +169,18 @@ export class StepExecutor {
           message: String(resolved.params?.message ?? ''),
         });
         return { outcome: 'completed' };
+      case 'manual_pause':
+        // A manual checkpoint where the recorded flow expects the human to do
+        // something (focus an app, place a file) before continuing. Phase-1
+        // headless/CLI runs have no resume channel, so we surface the message
+        // as a log and continue rather than crash on an unhandled step type.
+        // An interactive pause/resume lands with the UI work.
+        ctx.emit({
+          type: 'log',
+          level: 'warn',
+          message: `manual_pause: ${String(resolved.params?.['message'] ?? '(no message)')}（フェーズ1のヘッドレス実行では自動継続）`,
+        });
+        return { outcome: 'completed' };
       case 'wait_for':
         return this.executeWaitFor(resolved, ctx);
       default: {

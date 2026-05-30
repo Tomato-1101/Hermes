@@ -207,6 +207,59 @@ describe('loadFlow', () => {
     expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
   });
 
+  it('validates the megaflow fixture and routes it to every layer', async () => {
+    // The §7 acceptance megaflow exercises nearly all features. Functional
+    // replay of web/desktop/screen needs Chrome + the sidecar + real targets
+    // (the user runs it manually), so here we assert it is a structurally
+    // valid Flow and that layer detection lights up every provider.
+    const fixture = fileURLToPath(new URL('../fixtures/megaflow.flow.json', import.meta.url));
+    const flow = await loadFlow(fixture);
+    expect(flow.steps).toHaveLength(32);
+    expect(collectLayers(flow)).toEqual({
+      web: true,
+      desktop: true,
+      screen: true,
+      clipboard: true,
+      excel: true,
+    });
+  });
+
+  it('runs an exceljs flow end-to-end on Mac (read → transform → write)', async () => {
+    // The Mac-runnable slice of the megaflow: prove the whole CLI → engine →
+    // excel-provider → disk chain works headlessly (no Chrome/sidecar needed).
+    const { createExcelProvider } = await import('@hermes/excel-provider');
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-excel-acc-'));
+    try {
+      const xlsx = join(dir, 'data.xlsx');
+      const seed = createExcelProvider();
+      await seed.openWorkbook(xlsx);
+      seed.writeCell(xlsx, 'A1', 'hello');
+      seed.writeCell(xlsx, 'A2', 'world');
+      await seed.save(xlsx);
+      await seed.dispose();
+
+      const flow = flowOf([
+        { id: newId(), type: 'excel_open', enabled: true, params: { path: 'data.xlsx' } },
+        { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A1', into: 'a' } },
+        { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A2', into: 'b' } },
+        { id: newId(), type: 'excel_write', enabled: true, params: { path: 'data.xlsx', cell: 'B1', value: '${var.a}-${var.b}' } },
+      ]);
+      const flowPath = join(dir, 'flow.json');
+      await writeFile(flowPath, JSON.stringify(flow));
+
+      const result = await runFlowFile(flowPath);
+      expect(result.outcome).toBe('success');
+      expect(result.layers.excel).toBe(true);
+
+      const verify = createExcelProvider();
+      await verify.openWorkbook(xlsx);
+      expect(verify.readCell(xlsx, 'B1')).toBe('hello-world');
+      await verify.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('validates the Excel key-send recipe fixture and routes it to the desktop layer', async () => {
     // The recipe is a documented sample (Windows Excel shortcuts); we only
     // assert it is a structurally valid Flow and its key_combo steps route to

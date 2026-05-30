@@ -59,6 +59,29 @@ describe('StepExecutor', () => {
     expect(events.filter((e) => e.type === 'step:end')).toHaveLength(1);
   });
 
+  it('executes manual_pause as a logged checkpoint without a handler', async () => {
+    // manual_pause has no registered handler — the engine core must treat it
+    // as a no-op checkpoint (emit a log + continue) instead of throwing
+    // "No handler registered". Regression for the megaflow / recipe fixtures.
+    const exec = new StepExecutor({ registry: new HandlerRegistry() });
+    const events = recordEvents(exec);
+    const outcome = await exec.run(
+      makeFlow([
+        {
+          id: newId(),
+          type: 'manual_pause',
+          enabled: true,
+          params: { message: 'focus the target app' },
+        },
+      ]),
+    );
+    expect(outcome).toBe('success');
+    expect(
+      events.some((e) => e.type === 'log' && e.message.includes('focus the target app')),
+    ).toBe(true);
+    expect(events.some((e) => e.type === 'step:end' && e.outcome === 'completed')).toBe(true);
+  });
+
   it('retries on failure when policy allows', async () => {
     const registry = new HandlerRegistry();
     let tries = 0;

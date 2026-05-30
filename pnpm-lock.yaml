@@ -41,6 +41,9 @@ importers:
       '@hermes/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@hermes/excel-provider':
+        specifier: workspace:*
+        version: link:../../packages/excel-provider
       '@hermes/ir':
         specifier: workspace:*
         version: link:../../packages/ir

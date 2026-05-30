@@ -30,6 +30,8 @@ import {
   registerDesktopHandlers,
   registerScreenHandlers,
 } from '@hermes/desktop-adapter/handlers';
+import { ExcelProvider, createExcelProvider } from '@hermes/excel-provider';
+import { registerExcelHandlers } from '@hermes/excel-provider/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
 import { getSidecarClient } from './sidecar.js';
 import { DesktopRecorder } from './desktop-recorder.js';
@@ -49,6 +51,7 @@ export class RunController {
   private readonly vault: Vault;
   private provider: WebProvider | null = null;
   private desktop: DesktopProvider | null = null;
+  private excel: ExcelProvider | null = null;
   private recorder: WebRecorder | null = null;
   private desktopRecorder: DesktopRecorder | null = null;
   private currentRecordingFlowId: string | null = null;
@@ -393,6 +396,9 @@ export class RunController {
     const needsClipboard = flow.steps.some(stepUsesClipboard);
     const needsDesktop =
       needsScreen || needsClipboard || flow.steps.some(stepNeedsLayer('desktop'));
+    // Excel steps are file-based (exceljs) and need no OS provider — just the
+    // in-process workbook provider + handlers. Independent of desktop.
+    const needsExcel = flow.steps.some(stepUsesExcel);
 
     // Log the decision so the user can see in the log panel WHY a provider
     // is (or isn't) about to start. If "browser opens on a desktop-only
@@ -441,12 +447,16 @@ export class RunController {
     if (needsDesktop) {
       this.ensureDesktopProvider();
     }
+    if (needsExcel) {
+      this.ensureExcelProvider();
+    }
 
     const registry = new HandlerRegistry();
     registerWebHandlers(registry);
     if (this.desktop) registerDesktopHandlers(registry);
     if (this.desktop && needsScreen) registerScreenHandlers(registry);
     if (this.desktop && needsClipboard) registerClipboardHandlers(registry);
+    if (this.excel && needsExcel) registerExcelHandlers(registry);
 
     // Pre-fetch every secret the flow references so the engine can
     // interpolate without itself touching keytar. Unknown secrets resolve
@@ -461,9 +471,10 @@ export class RunController {
     const runId = newId();
     this.activeRun = { runId, abort };
 
-    const providers: { web?: WebProvider; desktop?: DesktopProvider } = {};
+    const providers: { web?: WebProvider; desktop?: DesktopProvider; excel?: ExcelProvider } = {};
     if (this.provider) providers.web = this.provider;
     if (this.desktop) providers.desktop = this.desktop;
+    if (this.excel) providers.excel = this.excel;
 
     // Inject AppSettings.humanize as a pseudo-input. Web/desktop handlers
     // pick it up under the same key (ctx.vars.__hermes_humanize__), so the
@@ -477,10 +488,13 @@ export class RunController {
     const seededInputs: Record<string, unknown> = {
       ...(inputs ?? {}),
       __hermes_humanize__: humanize,
-      // Image-selector assetRefs are stored relative to the flow dir
-      // (e.g. "assets/btn.png"); the screen handlers resolve them against
-      // this base. Mirrors runFlowFile's dirname(flow file) in the CLI.
-      ...(needsScreen ? { __hermes_assets_dir__: this.store.flowDir(flowId) } : {}),
+      // Image-selector assetRefs and Excel `path`s are stored relative to the
+      // flow dir (e.g. "assets/btn.png", "data.xlsx"); the screen and excel
+      // handlers resolve them against this base. Mirrors runFlowFile's
+      // dirname(flow file) in the CLI.
+      ...(needsScreen || needsExcel
+        ? { __hermes_assets_dir__: this.store.flowDir(flowId) }
+        : {}),
     };
 
     const executor = new StepExecutor({
@@ -525,6 +539,12 @@ export class RunController {
       .run(flow, { signal: abort.signal, inputs: seededInputs })
       .finally(() => {
         if (this.activeRun?.runId === runId) this.activeRun = null;
+        // Excel workbooks are held in memory per run; drop them so the next
+        // run reopens from disk (auto-save already flushed every write).
+        if (this.excel) {
+          void this.excel.dispose();
+          this.excel = null;
+        }
       });
 
     return runId;
@@ -633,6 +653,11 @@ export class RunController {
     this.desktop = new DesktopProvider(adapter);
   }
 
+  private ensureExcelProvider(): void {
+    if (this.excel) return;
+    this.excel = createExcelProvider();
+  }
+
   async dispose(): Promise<void> {
     await this.stopRun();
     await this.recorder?.detach();
@@ -646,6 +671,10 @@ export class RunController {
     if (this.desktop) {
       await this.desktop.adapter.dispose();
       this.desktop = null;
+    }
+    if (this.excel) {
+      await this.excel.dispose();
+      this.excel = null;
     }
     this.currentRecordingFlowId = null;
   }
@@ -704,6 +733,14 @@ function stepUsesClipboard(step: Step): boolean {
   if (step.type === 'clipboard_read' || step.type === 'clipboard_write') return true;
   if (step.children && step.children.some(stepUsesClipboard)) return true;
   if (step.branches && step.branches.some((b) => b.steps.some(stepUsesClipboard))) return true;
+  return false;
+}
+
+/** Excel (exceljs) steps are targetless; detect by the `excel_` type prefix. */
+function stepUsesExcel(step: Step): boolean {
+  if (step.type.startsWith('excel_')) return true;
+  if (step.children && step.children.some(stepUsesExcel)) return true;
+  if (step.branches && step.branches.some((b) => b.steps.some(stepUsesExcel))) return true;
   return false;
 }
 
