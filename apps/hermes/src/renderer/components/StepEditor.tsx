@@ -9,9 +9,23 @@ export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: P
     onChange({ params: { ...params, [key]: value } });
   };
 
+  // Progressive disclosure: action steps split their params into "primary"
+  // (shown) and "advanced" (low-level knobs tucked into the 詳細 block, where
+  // the raw target JSON and step ID also live). Structural / wait steps have
+  // their own editors, so they expose no generic params.
+  const isGenericParams =
+    !isStructuralType(step.type) && step.type !== 'wait' && step.type !== 'wait_for';
+  const paramEntries = Object.entries(params);
+  const primaryParams = isGenericParams
+    ? paramEntries.filter(([k]) => !ADVANCED_PARAM_KEYS.has(k))
+    : [];
+  const advancedParams = isGenericParams
+    ? paramEntries.filter(([k]) => ADVANCED_PARAM_KEYS.has(k))
+    : [];
+
   return (
     <section className="step-editor">
-      <h3>ステップ #{step.id.slice(-6)}</h3>
+      <h3>{step.label?.trim() ? step.label : step.type}</h3>
       <ul className="kv">
         <li><span className="kv-key">タイプ</span><span className="kv-value mono">{step.type}</span></li>
         <li>
@@ -125,14 +139,11 @@ export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: P
       {step.type === 'wait' && <WaitEditor step={step} onChange={onChange} />}
       {step.type === 'wait_for' && <WaitForEditor step={step} onChange={onChange} />}
 
-      {!isStructuralType(step.type) &&
-        step.type !== 'wait' &&
-        step.type !== 'wait_for' && (
+      {isGenericParams && primaryParams.length > 0 && (
         <>
           <h4>パラメータ</h4>
-          {Object.keys(params).length === 0 && <p className="muted">なし</p>}
           <ul className="kv">
-            {Object.entries(params).map(([k, v]) => (
+            {primaryParams.map(([k, v]) => (
               <li key={k}>
                 <span className="kv-key">{k}</span>
                 <input
@@ -145,19 +156,128 @@ export function StepEditor({ step, onChange }: { step: Step; onChange: (patch: P
           </ul>
         </>
       )}
-
-      {step.target !== undefined && (
+      {isGenericParams && paramEntries.length === 0 && (
         <>
-          <h4>ターゲット</h4>
-          <pre className="json">{JSON.stringify(step.target, null, 2)}</pre>
+          <h4>パラメータ</h4>
+          <p className="muted">なし</p>
         </>
       )}
+
+      {step.target !== undefined && (
+        <ul className="kv">
+          <li>
+            <span className="kv-key">対象</span>
+            <span className="kv-value target-summary">{describeTarget(step.target)}</span>
+          </li>
+        </ul>
+      )}
+
+      {/* Everything technical lives here, collapsed by default: the step ID,
+          low-level params, and the raw target JSON for power users / debugging. */}
+      <details className="advanced-details">
+        <summary>詳細</summary>
+        <ul className="kv">
+          <li>
+            <span className="kv-key">ステップID</span>
+            <span className="kv-value mono">{step.id}</span>
+          </li>
+          {advancedParams.map(([k, v]) => (
+            <li key={k}>
+              <span className="kv-key">{k}</span>
+              <input
+                className="kv-value"
+                value={typeof v === 'string' ? v : JSON.stringify(v)}
+                onChange={(e) => setParam(k, e.target.value)}
+              />
+            </li>
+          ))}
+        </ul>
+        {step.target !== undefined && (
+          <>
+            <h4>生ターゲット (JSON)</h4>
+            <pre className="json">{JSON.stringify(step.target, null, 2)}</pre>
+          </>
+        )}
+      </details>
     </section>
   );
 }
 
 function isStructuralType(t: string): boolean {
   return t === 'if' || t === 'loop' || t === 'try';
+}
+
+/** Low-level params hidden from the basic view and shown only under 詳細.
+ *  These are recorded knobs that have sensible defaults and are rarely
+ *  hand-edited (e.g. clear-before-type, mouse button, OCR language). */
+const ADVANCED_PARAM_KEYS = new Set<string>([
+  'clearFirst',
+  'control',
+  'waitUntil',
+  'settleMs',
+  'level',
+  'clickCount',
+  'button',
+  'threshold',
+  'scaleInvariant',
+  'regex',
+  'lang',
+  'exact',
+  'anchor',
+]);
+
+/**
+ * Human-readable one-line summary of a step's target, replacing the raw
+ * selector-candidate JSON in the basic view. Reads the primary candidate
+ * (the first in the array) and renders it by kind; the full JSON stays
+ * available under 詳細.
+ */
+function describeTarget(target: unknown): string {
+  if (!target || typeof target !== 'object') return '—';
+  const t = target as { layer?: string; candidates?: unknown[] };
+  const layerLabel =
+    t.layer === 'web' ? 'Web' : t.layer === 'desktop' ? 'アプリ' : t.layer === 'screen' ? '画面' : '';
+  const primary = Array.isArray(t.candidates) ? t.candidates[0] : undefined;
+  const sel = summarizeSelector(primary);
+  return layerLabel ? `${layerLabel}: ${sel}` : sel;
+}
+
+function clip(v: unknown, max = 30): string {
+  const s = String(v ?? '');
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+function summarizeSelector(sel: unknown): string {
+  if (!sel || typeof sel !== 'object') return '(対象未設定)';
+  const s = sel as Record<string, unknown>;
+  switch (s['kind']) {
+    case 'role':
+      return s['name'] ? `${s['role']}〈${clip(s['name'])}〉` : `ロール ${clip(s['role'])}`;
+    case 'testid':
+      return `テストID「${clip(s['value'])}」`;
+    case 'label':
+      return `ラベル「${clip(s['text'])}」`;
+    case 'css':
+      return `CSS「${clip(s['value'])}」`;
+    case 'xpath':
+      return `XPath「${clip(s['value'])}」`;
+    case 'text':
+      return `テキスト「${clip(s['value'])}」`;
+    case 'url-anchor':
+      return `URL「${clip(s['pattern'])}」`;
+    case 'ax':
+      return s['title'] ? `${s['role']}〈${clip(s['title'])}〉` : `AX ${clip(s['role'])}`;
+    case 'uia':
+      return s['name'] ? `${s['controlType']}〈${clip(s['name'])}〉` : `UIA ${clip(s['controlType'])}`;
+    case 'image':
+      return `画像テンプレート（${clip(s['assetRef'])}）`;
+    case 'ocr':
+      return `画面の文字「${clip(s['text'])}」`;
+    case 'coords':
+      return `座標 (${s['x']}, ${s['y']})`;
+    default:
+      return '(対象未設定)';
+  }
 }
 
 /**
