@@ -88,4 +88,12 @@ describe('DesktopRecorder — scroll / drag mapping', () => {
       anchor: 'screen',
     });
   });
+
+  it('maps a right-click to a click Step carrying params.button=right', async () => {
+    const [step] = await stepsFromEvents([
+      { seq: 1, kind: 'click', button: 'right', x: 7, y: 8, ts: 1 },
+    ]);
+    expect(step?.type).toBe('click');
+    expect(step?.params).toEqual({ button: 'right' });
+  });
 });

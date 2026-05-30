@@ -96,6 +96,7 @@ final class Recorder {
             let mask: CGEventMask =
                 (1 << CGEventType.leftMouseDown.rawValue) |
                 (1 << CGEventType.leftMouseUp.rawValue) |
+                (1 << CGEventType.rightMouseDown.rawValue) |
                 (1 << CGEventType.scrollWheel.rawValue) |
                 (1 << CGEventType.keyDown.rawValue)
 
@@ -290,17 +291,26 @@ final class Recorder {
         enqueueClick(from: d)
     }
 
-    private func enqueueClick(from d: PendingMouseDown) {
+    private func enqueueClick(from d: PendingMouseDown, button: String = "left") {
         var fields: [String: JSONValue] = [
             "seq": .int(nextSequence()),
             "kind": .string("click"),
-            "button": .string("left"),
+            "button": .string(button),
             "x": .double(d.x),
             "y": .double(d.y),
             "ts": .double(d.ts),
         ]
         if let el = d.element { fields["element"] = el }
         enqueue(.object(fields))
+    }
+
+    /// Right clicks aren't disambiguated against a drag (a right-drag is not a
+    /// gesture we record), so they emit immediately on press — flushing any
+    /// in-flight text/scroll first to keep IR ordering faithful.
+    fileprivate func recordRightClick(x: Double, y: Double, ts: TimeInterval, element: JSONValue?) {
+        flushTextBuffer()
+        flushScrollBuffer()
+        enqueueClick(from: PendingMouseDown(x: x, y: y, ts: ts, element: element), button: "right")
     }
 
     private func enqueueDrag(from d: PendingMouseDown, toX: Double, toY: Double) {
@@ -409,6 +419,11 @@ private let recordingTapCallback: CGEventTapCallBack = {
     case .leftMouseUp:
         let loc = event.location
         recorder.endMouseUp(x: loc.x, y: loc.y)
+
+    case .rightMouseDown:
+        let loc = event.location
+        let element = try? elementAtPoint(x: loc.x, y: loc.y)
+        recorder.recordRightClick(x: loc.x, y: loc.y, ts: ts, element: element)
 
     case .scrollWheel:
         let loc = event.location
