@@ -25,14 +25,21 @@ const api = {
   flowSave: (flow: unknown) => ipcRenderer.invoke(IpcChannels.flowSave, { flow }),
 
   // Recorder
-  recorderStart: (flowId: string, startUrl?: string) =>
-    ipcRenderer.invoke(IpcChannels.recorderStart, { flowId, startUrl }),
+  recorderStart: (flowId: string, startUrl?: string, layer?: 'web' | 'desktop') =>
+    ipcRenderer.invoke(IpcChannels.recorderStart, { flowId, startUrl, layer }),
   recorderStop: () => ipcRenderer.invoke(IpcChannels.recorderStop),
 
   // Runner
   runStart: (flowId: string, inputs?: Record<string, unknown>) =>
     ipcRenderer.invoke(IpcChannels.runStart, { flowId, inputs }),
   runStop: () => ipcRenderer.invoke(IpcChannels.runStop),
+
+  // Vault
+  vaultList: () => ipcRenderer.invoke(IpcChannels.vaultList),
+  vaultSet: (account: string, value: string) =>
+    ipcRenderer.invoke(IpcChannels.vaultSet, { account, value }),
+  vaultDelete: (account: string) =>
+    ipcRenderer.invoke(IpcChannels.vaultDelete, { account }),
 
   // Event subscription
   onEvent: (handler: (event: unknown) => void) => {

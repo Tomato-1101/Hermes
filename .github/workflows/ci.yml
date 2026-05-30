@@ -29,10 +29,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build composite projects (IR + Engine)
+      - name: Build composite projects
         run: |
           pnpm --filter @hermes/ir exec tsc -b
           pnpm --filter @hermes/engine exec tsc -b
+          pnpm --filter @hermes/storage exec tsc -b
+          pnpm --filter @hermes/ai exec tsc -b
+          pnpm --filter @hermes/web-provider exec tsc -b
+          pnpm --filter @hermes/desktop-adapter exec tsc -b
+          pnpm --filter @hermes/recorder-web exec tsc -b
 
       - name: Lint
         run: pnpm lint

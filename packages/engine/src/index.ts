@@ -1,4 +1,4 @@
-export { StepExecutor } from './executor.js';
+export { StepExecutor, type SecretsMap } from './executor.js';
 export { HandlerRegistry, type HandlerLayer } from './registry.js';
 export { nextDelayMs, shouldRetry, sleep } from './retry.js';
 export {

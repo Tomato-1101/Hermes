@@ -126,7 +126,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IpcChannels.recorderStart, async (_event, raw) => {
     const args = IpcContract[IpcChannels.recorderStart].args.parse(raw);
-    await controller.startRecording(args.flowId, args.startUrl);
+    await controller.startRecording(args.flowId, args.startUrl, args.layer);
     return { ok: true as const };
   });
 
@@ -144,6 +144,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IpcChannels.runStop, async () => {
     await controller.stopRun();
     return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.vaultList, async () => {
+    const entries = await controller.vaultList();
+    return { entries };
+  });
+
+  ipcMain.handle(IpcChannels.vaultSet, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.vaultSet].args.parse(raw);
+    await controller.vaultSet(args.account, args.value);
+    return { ok: true as const };
+  });
+
+  ipcMain.handle(IpcChannels.vaultDelete, async (_event, raw) => {
+    const args = IpcContract[IpcChannels.vaultDelete].args.parse(raw);
+    const deleted = await controller.vaultDelete(args.account);
+    return { deleted };
   });
 }
 

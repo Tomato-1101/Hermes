@@ -27,6 +27,10 @@ export const IpcChannels = {
   // Runner
   runStart: 'run:start',
   runStop: 'run:stop',
+  // Vault
+  vaultList: 'vault:list',
+  vaultSet: 'vault:set',
+  vaultDelete: 'vault:delete',
   // Event push channel name (renderer subscribes via ipcRenderer.on)
   eventPush: 'hermes:event',
 } as const;
@@ -113,9 +117,15 @@ export const FlowSaveArgs = z.object({ flow: FlowSchema });
 export const FlowSaveResult = z.object({ ok: z.literal(true) });
 
 // --- recorder ---
+// startUrl is validated leniently here so the renderer doesn't have to ship a
+// URL parser to its prompt; the controller does the actual normalization
+// (prepending https:// if missing) before handing it to Playwright.
+// `layer` chooses between the Playwright-based web recorder and the
+// CGEventTap-based desktop recorder; defaults to 'web'.
 export const RecorderStartArgs = z.object({
   flowId: z.string(),
-  startUrl: z.string().url().optional(),
+  startUrl: z.string().min(1).optional(),
+  layer: z.enum(['web', 'desktop']).optional(),
 });
 export const RecorderStartResult = z.object({ ok: z.literal(true) });
 
@@ -131,6 +141,20 @@ export const RunStartResult = z.object({ runId: z.string() });
 
 export const RunStopArgs = z.void();
 export const RunStopResult = z.object({ ok: z.literal(true) });
+
+// --- vault ---
+export const VaultListResult = z.object({
+  entries: z.array(z.object({ account: z.string() })),
+});
+
+export const VaultSetArgs = z.object({
+  account: z.string().min(1).max(256),
+  value: z.string(),
+});
+export const VaultSetResult = z.object({ ok: z.literal(true) });
+
+export const VaultDeleteArgs = z.object({ account: z.string().min(1).max(256) });
+export const VaultDeleteResult = z.object({ deleted: z.boolean() });
 
 // --- push events (Main → Renderer) ---
 export const EventPush = z.discriminatedUnion('type', [
@@ -173,4 +197,7 @@ export const IpcContract = {
   [IpcChannels.recorderStop]: { args: RecorderStopArgs, result: RecorderStopResult },
   [IpcChannels.runStart]: { args: RunStartArgs, result: RunStartResult },
   [IpcChannels.runStop]: { args: RunStopArgs, result: RunStopResult },
+  [IpcChannels.vaultList]: { args: z.void(), result: VaultListResult },
+  [IpcChannels.vaultSet]: { args: VaultSetArgs, result: VaultSetResult },
+  [IpcChannels.vaultDelete]: { args: VaultDeleteArgs, result: VaultDeleteResult },
 } as const;

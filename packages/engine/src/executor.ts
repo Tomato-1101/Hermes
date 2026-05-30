@@ -1,5 +1,12 @@
 import mitt, { type Emitter } from 'mitt';
 import type { Flow, Step } from '@hermes/ir';
+import {
+  evaluateExpr,
+  ExprError,
+  interpolateParams,
+  type ExprContext,
+  type InterpolateContext,
+} from '@hermes/ir';
 import { HandlerRegistry } from './registry.js';
 import { nextDelayMs, shouldRetry, sleep } from './retry.js';
 import {
@@ -12,16 +19,31 @@ import {
   type StepStatus,
 } from './types.js';
 
+/**
+ * Per-run map of secret names → resolved plaintext values. Populated by
+ * the caller (apps/hermes) before run() — the engine itself never
+ * touches the Vault, it just substitutes pre-fetched values into
+ * `${secrets.<name>}` placeholders at dispatch time.
+ */
+export type SecretsMap = Record<string, string | undefined>;
+
 type EmitterEvents = { event: RunEvent };
 
 export class StepExecutor {
   private readonly registry: HandlerRegistry;
   private readonly providers: ProviderBag;
   private readonly emitter: Emitter<EmitterEvents>;
+  private readonly secrets: SecretsMap;
 
-  constructor(opts: { registry: HandlerRegistry; providers?: ProviderBag }) {
+  constructor(opts: {
+    registry: HandlerRegistry;
+    providers?: ProviderBag;
+    /** Pre-resolved secret values for `${secrets.<name>}` substitution. */
+    secrets?: SecretsMap;
+  }) {
     this.registry = opts.registry;
     this.providers = opts.providers ?? {};
+    this.secrets = opts.secrets ?? {};
     this.emitter = mitt<EmitterEvents>();
   }
 
@@ -121,48 +143,78 @@ export class StepExecutor {
   }
 
   private async executeOnce(step: Step, ctx: RunContext, cursor: string): Promise<StepResult> {
-    // Structural step types are handled here directly.
-    switch (step.type) {
+    // Resolve ${var.x} / ${secrets.x} / ${env.X} / ${ctx.x} in params for
+    // *every* step type, including structural ones — otherwise variables
+    // are silently empty inside if conditions, loop counts, log messages, etc.
+    const resolved = this.resolveStep(step, ctx);
+
+    switch (resolved.type) {
       case 'if':
-        return this.executeIf(step, ctx, cursor);
+        return this.executeIf(resolved, ctx, cursor);
       case 'loop':
-        return this.executeLoop(step, ctx, cursor);
+        return this.executeLoop(resolved, ctx, cursor);
       case 'try':
-        return this.executeTry(step, ctx, cursor);
+        return this.executeTry(resolved, ctx, cursor);
       case 'log':
         ctx.emit({
           type: 'log',
-          level: (step.params?.level as 'debug' | 'info' | 'warn' | 'error') ?? 'info',
-          message: String(step.params?.message ?? ''),
+          level: (resolved.params?.level as 'debug' | 'info' | 'warn' | 'error') ?? 'info',
+          message: String(resolved.params?.message ?? ''),
         });
         return { outcome: 'completed' };
       default: {
-        const handler = this.registry.get(step.type, step.target?.layer);
+        const handler = this.registry.get(resolved.type, resolved.target?.layer);
         if (!handler) {
-          const layerSuffix = step.target?.layer ? ` (layer="${step.target.layer}")` : '';
-          throw new Error(`No handler registered for step type "${step.type}"${layerSuffix}`);
+          const layerSuffix = resolved.target?.layer ? ` (layer="${resolved.target.layer}")` : '';
+          throw new Error(`No handler registered for step type "${resolved.type}"${layerSuffix}`);
         }
-        const promise = handler.execute(step, ctx);
-        return await withTimeout(promise, step.timeoutMs ?? ctx.flow.defaults.timeoutMs, ctx.signal);
+        const promise = handler.execute(resolved, ctx);
+        return await withTimeout(promise, resolved.timeoutMs ?? ctx.flow.defaults.timeoutMs, ctx.signal);
       }
     }
   }
 
+  /**
+   * Evaluate a string from an if/loop condition. The string is first treated
+   * as a jsep expression — but to keep simple cases ergonomic, if parsing
+   * fails or the result is a string we also fall back to a plain truthy
+   * check (so `condition: ""` still means false and `condition: "yes"` still
+   * means true). Editor wires put a literal `"true"` or `"${var.x}"` here.
+   */
+  private evalCondition(condition: unknown, ctx: RunContext): boolean {
+    if (condition === undefined || condition === null) return false;
+    if (typeof condition === 'boolean') return condition;
+    if (typeof condition === 'number') return condition !== 0;
+    if (typeof condition !== 'string') return Boolean(condition);
+    const trimmed = condition.trim();
+    if (!trimmed) return false;
+    try {
+      const exprCtx: ExprContext = {
+        var: ctx.vars,
+        env: process.env,
+        secrets: {},
+        ctx: ctx.outputs,
+      };
+      const result = evaluateExpr(trimmed, exprCtx);
+      return Boolean(result);
+    } catch (e) {
+      // Fall back to truthy on plain strings that aren't valid expressions —
+      // matches what a non-technical user typing "yes" would expect.
+      if (e instanceof ExprError) return Boolean(trimmed);
+      throw e;
+    }
+  }
+
   private async executeIf(step: Step, ctx: RunContext, cursor: string): Promise<StepResult> {
-    // For now: rely on branches[0].condition being truthy. Expression evaluation
-    // is wired in by callers (engine doesn't depend on @hermes/ir/expr to keep
-    // the boundary clean). The expression evaluator lives in @hermes/ir and is
-    // invoked by app-level orchestration before passing the resolved boolean.
+    // step.params.condition is parsed as a jsep expression (with truthy
+    // fall-back for plain strings). branches[0].steps runs on true,
+    // step.children acts as the else branch.
     const branches = step.branches ?? [];
-    const condValue = step.params?.['condition'];
-    const passing = branches.find((b, idx) => {
-      if (idx === 0) return Boolean(condValue);
-      return false;
-    });
-    if (passing) {
-      await this.runSteps(passing.steps, ctx, `${cursor}.branches[0].steps`);
+    const passed = this.evalCondition(step.params?.['condition'], ctx);
+    if (passed) {
+      const then = branches[0];
+      if (then) await this.runSteps(then.steps, ctx, `${cursor}.branches[0].steps`);
     } else if (step.children && step.children.length > 0) {
-      // children acts as "else"
       await this.runSteps(step.children, ctx, `${cursor}.children`);
     }
     return { outcome: 'completed' };
@@ -170,23 +222,40 @@ export class StepExecutor {
 
   private async executeLoop(step: Step, ctx: RunContext, cursor: string): Promise<StepResult> {
     const kind = (step.params?.['kind'] as string) ?? 'for';
-    const count = Number(step.params?.['count'] ?? 0);
     const children = step.children ?? [];
     if (kind === 'for') {
+      const count = Number(step.params?.['count'] ?? 0);
       for (let i = 0; i < count; i++) {
         this.assertNotAborted(ctx);
         await this.runSteps(children, ctx, `${cursor}.children[${i}]`);
       }
     } else if (kind === 'forEach') {
+      // items can be a JSON array literal or a `${var.x}` reference that the
+      // interpolator already resolved to the actual array.
       const items = (step.params?.['items'] as unknown[]) ?? [];
       const asVar = (step.params?.['asVar'] as string) ?? 'item';
+      if (!Array.isArray(items)) {
+        throw new Error(`loop forEach: params.items must be an array, got ${typeof items}`);
+      }
       for (let i = 0; i < items.length; i++) {
         this.assertNotAborted(ctx);
         ctx.vars[asVar] = items[i];
         await this.runSteps(children, ctx, `${cursor}.children[${i}]`);
       }
+    } else if (kind === 'while') {
+      const condition = step.params?.['condition'];
+      const maxIter = Number(step.params?.['maxIterations'] ?? 1000);
+      let i = 0;
+      while (this.evalCondition(condition, ctx)) {
+        this.assertNotAborted(ctx);
+        if (i >= maxIter) {
+          throw new Error(`loop while: exceeded maxIterations (${maxIter})`);
+        }
+        await this.runSteps(children, ctx, `${cursor}.children[${i}]`);
+        i++;
+      }
     } else {
-      throw new Error(`Unsupported loop kind "${kind}" (while requires expr evaluation provided by caller)`);
+      throw new Error(`Unsupported loop kind "${kind}"`);
     }
     return { outcome: 'completed' };
   }
@@ -215,6 +284,23 @@ export class StepExecutor {
 
   private assertNotAborted(ctx: RunContext): void {
     if (ctx.signal.aborted) throw new HermesAbortError();
+  }
+
+  /**
+   * Return a copy of `step` with all `${var.*}` / `${secrets.*}` /
+   * `${env.*}` / `${ctx.*}` placeholders in `params` replaced. The
+   * original step in the Flow is left untouched so we never persist a
+   * resolved secret back to disk.
+   */
+  private resolveStep(step: Step, ctx: RunContext): Step {
+    if (!step.params) return step;
+    const interpCtx: InterpolateContext = {
+      var: ctx.vars,
+      env: process.env,
+      secrets: this.secrets,
+      ctx: ctx.outputs,
+    };
+    return { ...step, params: interpolateParams(step.params, interpCtx) };
   }
 }
 

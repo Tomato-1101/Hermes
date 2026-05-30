@@ -2,6 +2,17 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# pnpm 11.x requires explicit per-package approval for postinstall build
+# scripts. Without `allowBuilds`, `pnpm install --frozen-lockfile` in CI
+# (where no prior approval exists on the runner) exits with
+# ERR_PNPM_IGNORED_BUILDS. `onlyBuiltDependencies` below is the legacy
+# allowlist and is kept for completeness.
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  esbuild: true
+  keytar: true
+
 onlyBuiltDependencies:
   - esbuild
   - better-sqlite3
