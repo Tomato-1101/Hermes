@@ -93,11 +93,11 @@
 > ※これらは本仕様書作成時点（b3d5fa6）の観察。Phase 1 を止めるブロッカーではないが、AI が誤って「実装済み」と仮定しないための注意書き。
 
 ### スキーマ/型の不整合
-- **`FlowDefaults.humanize`**: TS 型（`schema.ts`）には在るが、`json-schema.ts` の `flowDefaults`（`additionalProperties:false`）に列挙漏れ。`flow.defaults.humanize` を入れた IR は ajv 検証で弾かれ得る。（[02](02-ir-schema.md) §2.1, §10）
+- ~~**`FlowDefaults.humanize`**: `json-schema.ts` の `flowDefaults` に列挙漏れで検証拒否~~ → **2026-05-31 修正済み**（`flowDefaults.properties.humanize` 追加 + 回帰テスト）。（[02](02-ir-schema.md) §10）
 - **`metadata.targets`** は web/desktop のみ対応で screen 不可だが、`TargetRef.layer` は screen を許す。screen ターゲットを記録したときの metadata 扱いが未定義。（[02](02-ir-schema.md) §10）
-- `packages/ir` の `index.ts` は `./interpolate.js` を再 export するが、`package.json` の `exports` に `./interpolate` キーが無い。（[01](01-architecture.md)/[02](02-ir-schema.md)）
 - renderer の `Step`/`Flow` 型は IR と完全一致を保証していない（`FlowSchema` は IR を `z.unknown()` で opaque に通し、検証は `@hermes/ir` の ajv に委ねる）。（[05](05-app-electron.md)）
-- main の `DEFAULT_SETTINGS`（`system-chrome-import`）と renderer の `DEFAULT_APP_SETTINGS`（`system-chrome`）で初期値の文字列がズレる（後者は設定読込前の暫定値）。（[05](05-app-electron.md) §8）
+- ~~main `DEFAULT_SETTINGS`（`system-chrome-import`）と renderer `DEFAULT_APP_SETTINGS`（`system-chrome`）で mode がズレる~~ → **2026-05-31 修正済み**（renderer 側を `system-chrome-import` に統一）。なお humanize の `mouseMinSteps/mouseMaxSteps` は main(16/1200) と renderer暫定値(8/60) で依然ズレ（loadAppSettings で上書きされるため実害は軽微）。（[05](05-app-electron.md) §8）
+- 【非欠陥】`packages/ir` の `index.ts` は `./interpolate.js` を再 export するため、`interpolate` はパッケージルート（`@hermes/ir`）から利用可能。`@hermes/ir/interpolate` のサブパス import はリポジトリ内に存在せず、`package.json` の `exports` にサブパスキーが無いのは問題ではない。
 
 ### 型はあるが未配線/未実装
 - **engine**: `mode:'step'` / `resume()` は型のみで未実装。`onError:'retry'` と `{goto}` は未処理（`'continue'` 以外は実質 fail 扱い）。`RetryPolicy.betweenAttempts` は engine が参照しない。（[03](03-engine.md)）

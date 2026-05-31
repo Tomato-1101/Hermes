@@ -96,7 +96,9 @@ export type AppSettings = {
 };
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
-  browser: { mode: 'system-chrome', channel: 'chrome' },
+  // main 側 DEFAULT_SETTINGS と既定を一致させる（settings:get 解決前の暫定表示が
+  // 実際の既定と食い違わないように）。推奨モードは system-chrome-import。
+  browser: { mode: 'system-chrome-import', channel: 'chrome' },
   humanize: {
     mouseSpeedPxPerSec: 800,
     typeDelayMs: 50,

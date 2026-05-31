@@ -58,6 +58,14 @@ export const flowJsonSchema = {
         screenshotOnError: { type: 'boolean' },
         waitBetweenStepsMs: { type: 'integer', minimum: 0 },
         allowList: { $ref: '#/$defs/allowList' },
+        humanize: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            mouseSpeedPxPerSec: { type: 'number', minimum: 0 },
+            typeDelayMs: { type: 'number', minimum: 0 },
+          },
+        },
       },
     },
     flowMetadata: {

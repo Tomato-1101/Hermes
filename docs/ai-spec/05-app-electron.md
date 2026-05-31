@@ -227,7 +227,7 @@ onEvent(handler: (event: unknown) => void): () => void
 - データ: `flows: FlowSummary[]`, `currentFlow: Flow|null`, `selectedStepId: string|null`, `dirty: boolean`, `appSettings: AppSettings`。
 - 実行/記録: `recording`, `running`, `activeStepId`（run:step駆動。タイムラインの現在地ハイライト。runが終わると `setRunning(false)` が null化）, `log: LogEntry[]`（500行cap）, `recordWaits`。
 - 履歴: `undoStack: FlowPatch[]`, `redoStack: FlowPatch[]`（`HISTORY_LIMIT=100`）。
-- `DEFAULT_APP_SETTINGS`（store内）は **mode=`system-chrome`, mouseMinSteps=8, mouseMaxSteps=60** で、main の `DEFAULT_SETTINGS` と**値がズレている**（=初回 `loadAppSettings()` 前の暫定値。読込後はmain側が上書き）。
+- `DEFAULT_APP_SETTINGS`（store内）は初回 `loadAppSettings()` 前の暫定値（読込後はmain側が上書き）。**mode は 2026-05-31 に `system-chrome-import` へ修正し main の `DEFAULT_SETTINGS` と一致**。ただし `mouseMinSteps=8, mouseMaxSteps=60` は main（16/1200）と依然ズレ（暫定値のため実害は軽微）。
 
 ### 全アクション
 - 非同期(IPC): `loadFlows`, `createFlow`, `openFlow`, `saveFlow`, `deleteFlow`, `duplicateFlow`, `renameFlow`, `loadAppSettings`, `setAppSettings`（楽観更新→`settingsSet`）。
@@ -357,7 +357,7 @@ App
 - **記録停止時にも自動 saveFlow される**（`Editor.onRecordWeb/onRecordDesktop`）。記録中の step は in-memory append のみ。
 - IPC は **全引数を zod でパース**してから処理。チャネル追加時は `IpcContract` 登録を忘れると `args.parse` で落ちる。
 - preload の api メソッドと `IpcChannels` は 1対1。チャネル名は `shared/ipc.ts` が唯一の真実、**直書きしない**。
-- main `DEFAULT_SETTINGS`(mode=system-chrome-import) と renderer `DEFAULT_APP_SETTINGS`(mode=system-chrome) は値がズレているが、後者は loadAppSettings 前の暫定値。
+- main `DEFAULT_SETTINGS` と renderer `DEFAULT_APP_SETTINGS` の **mode は一致**（ともに `system-chrome-import`、2026-05-31 修正）。humanize の `mouseMinSteps/mouseMaxSteps` のみ暫定値として残ズレ（loadAppSettings 後に上書き）。
 - settings.json は atomic write（`.tmp`→rename）+ 未知キー保存（前方互換）。`mouseMaxSteps<200` 等は loadSettings で自動引き上げ migrate。
 - グローバル停止ホットキー = `CommandOrControl+Shift+Escape`（デスクトップ再生中はHermesが背面なのでrenderer keylistenerでは捕まらない）。
 - サイドカーUDSパスは `tmpdir()/hermes-native-<pid>-<ts>.sock`。バイナリ探索はdebug/releaseの**mtime新しい方**。

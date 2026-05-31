@@ -132,7 +132,7 @@ export interface FlowDefaults {
 | `screenshotOnError` | `boolean` | 必須 | エラー時にスクショを撮るか。 |
 | `waitBetweenStepsMs` | `number`（`integer, minimum:0`） | 必須 | ステップ間の待機(ms)。 |
 | `allowList` | `AllowList` | 任意 | 危険ステップ種別のホワイトリスト（将来用）。 |
-| `humanize` | `{ mouseSpeedPxPerSec?: number; typeDelayMs?: number }` | 任意 | フロー単位の人間らしさ既定。**注意: `json-schema.ts` の `flowDefaults` は `additionalProperties:false` だが `humanize` を properties に列挙していない → JSON Schema 検証では `humanize` を持つ Flow は不正になる。【未確認】TS 型と JSON Schema の不整合（後述 §10 参照）。** |
+| `humanize` | `{ mouseSpeedPxPerSec?: number; typeDelayMs?: number }` | 任意 | フロー単位の人間らしさ既定。`json-schema.ts` の `flowDefaults` properties にも追加済み（2026-05-31 修正、回帰テスト `test/schema.test.ts` あり）。 |
 
 ### 2.2 FlowMetadata
 
@@ -575,7 +575,7 @@ export interface AllowList {
 
 ## 10. JSON Schema と TS 型の差分・既知の注意点
 
-- **`humanize` 不整合**: `FlowDefaults.humanize` は TS 型にあるが、`json-schema.ts` の `flowDefaults`（`additionalProperties:false`）の properties に**列挙されていない**。【未確認】そのため `humanize` を持つ Flow を `validateFlow` に通すと `additionalProperties` 違反になり得る。Flow 検証経路で `humanize` を使うなら JSON Schema 側にも追加が必要。
+- ~~**`humanize` 不整合**: `FlowDefaults.humanize` が `json-schema.ts` の `flowDefaults` に未列挙で検証拒否される~~ → **2026-05-31 修正済み**。`flowDefaults.properties.humanize`（`mouseSpeedPxPerSec`/`typeDelayMs`）を追加し、回帰テスト（`test/schema.test.ts` の "accepts a Flow whose defaults include humanize overrides"）で固定。
 - `step.params` は JSON Schema で `{ type:'object' }` のみ（中身ノーチェック）。型安全性は engine/adapter ハンドラ責務。
 - `metadata.targets` は web/desktop のみ（screen 不可）だが TargetRef.layer は screen を許す。記録時に screen ターゲットを使った場合の metadata 扱いは【未確認】。
 - 検証は `strict: true` の ajv。スキーマ自体が不正だと `ajv.compile` 時（モジュール読み込み時）に例外。
