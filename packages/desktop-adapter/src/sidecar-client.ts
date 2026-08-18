@@ -9,8 +9,16 @@
  * The client does NOT spawn the sidecar — that's the caller's job (in
  * apps/hermes, the Main process does it). The client just connects to a
  * known socket path. This keeps the adapter usable from tests too.
+ *
+ * The OS-specific connection lives behind the Transport seam (transport.ts):
+ * a Unix Domain Socket today, a Windows named pipe later, or a fake channel
+ * in tests. This client owns only the transport-agnostic parts — line
+ * framing, the JSON-RPC envelope, pending-call bookkeeping and timeouts.
  */
-import { createConnection, type Socket } from 'node:net';
+import { SocketTransport, type Transport } from './transport.js';
+
+export { SocketTransport };
+export type { Transport };
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -19,45 +27,45 @@ type Pending = {
 };
 
 export interface SidecarClientOptions {
-  socketPath: string;
+  /** UDS / named-pipe path. Required unless a transport is supplied. */
+  socketPath?: string;
+  /** Inject a transport (tests, alternate OS). Takes precedence over socketPath. */
+  transport?: Transport;
   /** Default per-call timeout in ms. */
   defaultTimeoutMs?: number;
 }
 
 export class SidecarClient {
-  private socket: Socket | null = null;
+  private readonly transport: Transport;
+  private readonly defaultTimeoutMs?: number;
+  private handlersBound = false;
   private connecting: Promise<void> | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private buf = '';
 
-  constructor(private readonly opts: SidecarClientOptions) {}
+  constructor(opts: SidecarClientOptions) {
+    if (opts.transport) {
+      this.transport = opts.transport;
+    } else if (opts.socketPath) {
+      this.transport = new SocketTransport({ path: opts.socketPath });
+    } else {
+      throw new Error('SidecarClient requires either socketPath or transport');
+    }
+    this.defaultTimeoutMs = opts.defaultTimeoutMs;
+  }
 
   async connect(): Promise<void> {
-    if (this.socket && !this.socket.destroyed) return;
+    if (this.transport.connected) return;
     if (this.connecting) return this.connecting;
-    this.connecting = new Promise<void>((resolve, reject) => {
-      const sock = createConnection(this.opts.socketPath);
-      const timer = setTimeout(() => {
-        sock.destroy();
-        reject(new Error(`Sidecar connect timed out: ${this.opts.socketPath}`));
-      }, 5_000);
-      sock.once('connect', () => {
-        clearTimeout(timer);
-        this.socket = sock;
-        sock.setEncoding('utf8');
-        sock.on('data', (chunk: string) => this.onData(chunk));
-        sock.on('close', () => {
-          this.failAll(new Error('Sidecar socket closed'));
-          this.socket = null;
-        });
-        resolve();
-      });
-      sock.once('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-    }).finally(() => {
+    // Bind framing + teardown once. The transport rewires these onto each
+    // fresh socket it opens, so they survive reconnects.
+    if (!this.handlersBound) {
+      this.transport.onData((chunk) => this.onData(chunk));
+      this.transport.onClose(() => this.failAll(new Error('Sidecar socket closed')));
+      this.handlersBound = true;
+    }
+    this.connecting = this.transport.connect().finally(() => {
       this.connecting = null;
     });
     return this.connecting;
@@ -65,31 +73,28 @@ export class SidecarClient {
 
   async call(method: string, params?: unknown, timeoutMs?: number): Promise<unknown> {
     await this.connect();
-    if (!this.socket) throw new Error('sidecar not connected');
+    if (!this.transport.connected) throw new Error('sidecar not connected');
     const id = this.nextId++;
     const body =
       JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? null }) + '\n';
-    const t = timeoutMs ?? this.opts.defaultTimeoutMs ?? 5_000;
+    const t = timeoutMs ?? this.defaultTimeoutMs ?? 5_000;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Sidecar call '${method}' timed out after ${t}ms`));
       }, t);
       this.pending.set(id, { resolve, reject, timer });
-      this.socket!.write(body, (err) => {
-        if (err) {
-          this.pending.delete(id);
-          clearTimeout(timer);
-          reject(err);
-        }
+      this.transport.write(body).catch((err) => {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(err);
       });
     });
   }
 
   dispose(): void {
     this.failAll(new Error('client disposed'));
-    this.socket?.destroy();
-    this.socket = null;
+    this.transport.close();
   }
 
   private onData(chunk: string): void {

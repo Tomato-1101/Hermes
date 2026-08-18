@@ -1,0 +1,280 @@
+import { describe, it, expect } from 'vitest';
+import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { CURRENT_SCHEMA_VERSION, newId, type Flow, type Step } from '@hermes/ir';
+import type { RunEvent } from '@hermes/engine';
+import { runFlow, runFlowFile, loadFlow, collectLayers } from '../src/index.js';
+
+function flowOf(steps: Step[]): Flow {
+  const now = '2026-05-30T00:00:00.000Z';
+  return {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    id: newId(),
+    name: 'cli-test',
+    createdAt: now,
+    updatedAt: now,
+    inputs: [],
+    outputs: [],
+    variables: [],
+    defaults: {
+      timeoutMs: 2000,
+      retry: { attempts: 1 },
+      screenshotOnError: false,
+      waitBetweenStepsMs: 0,
+    },
+    steps,
+    metadata: { origin: 'recorded', targets: [], requiredPermissions: [] },
+  };
+}
+
+const log = (message: string): Step => ({
+  id: newId(),
+  type: 'log',
+  enabled: true,
+  params: { message },
+});
+
+describe('collectLayers', () => {
+  it('reports no providers for a log/wait flow', () => {
+    const flow = flowOf([
+      log('a'),
+      { id: newId(), type: 'wait_for', enabled: true, params: { kind: 'time', ms: 1 } },
+    ]);
+    expect(collectLayers(flow)).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
+  });
+
+  it('detects web from open_url', () => {
+    const flow = flowOf([
+      { id: newId(), type: 'open_url', enabled: true, params: { url: 'https://example.test' } },
+    ]);
+    expect(collectLayers(flow).web).toBe(true);
+  });
+
+  it('detects desktop from a nested desktop-layer step', () => {
+    const flow = flowOf([
+      {
+        id: newId(),
+        type: 'loop',
+        enabled: true,
+        params: { kind: 'for', count: 1 },
+        children: [
+          {
+            id: newId(),
+            type: 'click',
+            enabled: true,
+            target: {
+              layer: 'desktop',
+              candidates: [{ kind: 'coords', x: 1, y: 2, anchor: 'screen' }],
+            },
+          },
+        ],
+      },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: false,
+      excel: false,
+    });
+  });
+
+  it('detects screen (and desktop) from a screen-layer step', () => {
+    const flow = flowOf([
+      {
+        id: newId(),
+        type: 'click',
+        enabled: true,
+        target: {
+          layer: 'screen',
+          candidates: [{ kind: 'image', assetRef: 'assets/btn.png', threshold: 0.8 }],
+        },
+      },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: true,
+      clipboard: false,
+      excel: false,
+    });
+  });
+
+  it('detects clipboard (and desktop) from targetless clipboard steps', () => {
+    const flow = flowOf([
+      { id: newId(), type: 'clipboard_write', enabled: true, params: { value: '${var.x}' } },
+      { id: newId(), type: 'clipboard_read', enabled: true, params: { into: 'y' } },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: true,
+      excel: false,
+    });
+  });
+
+  it('detects excel from targetless excel steps (no desktop)', () => {
+    const flow = flowOf([
+      { id: newId(), type: 'excel_open', enabled: true, params: { path: 'data.xlsx' } },
+      { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A1', into: 'v' } },
+    ]);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: false,
+      screen: false,
+      clipboard: false,
+      excel: true,
+    });
+  });
+});
+
+describe('runFlow — provider-less execution', () => {
+  it('runs log + wait_for + if + loop to success, building no providers', async () => {
+    const flow = flowOf([
+      log('start'),
+      { id: newId(), type: 'wait_for', enabled: true, params: { kind: 'time', ms: 5 } },
+      {
+        id: newId(),
+        type: 'if',
+        enabled: true,
+        params: { condition: 'true' },
+        branches: [{ name: 'then', steps: [log('then-branch')] }],
+      },
+      {
+        id: newId(),
+        type: 'loop',
+        enabled: true,
+        params: { kind: 'for', count: 2 },
+        children: [log('tick')],
+      },
+    ]);
+    const events: RunEvent[] = [];
+    const result = await runFlow(flow, { onEvent: (e) => events.push(e) });
+    expect(result.outcome).toBe('success');
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
+    expect(events.some((e) => e.type === 'run:end' && e.outcome === 'success')).toBe(true);
+    // start + then-branch + 2 loop ticks
+    expect(events.filter((e) => e.type === 'log').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('seeds inputs into variables used by an if condition', async () => {
+    const flow = flowOf([
+      {
+        id: newId(),
+        type: 'if',
+        enabled: true,
+        params: { condition: '${var.go}' },
+        branches: [{ name: 'then', steps: [log('went')] }],
+      },
+    ]);
+    const events: RunEvent[] = [];
+    const result = await runFlow(flow, { inputs: { go: true }, onEvent: (e) => events.push(e) });
+    expect(result.outcome).toBe('success');
+    expect(events.some((e) => e.type === 'log' && e.message === 'went')).toBe(true);
+  });
+});
+
+describe('loadFlow', () => {
+  it('throws on invalid JSON', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-cli-'));
+    try {
+      const p = join(dir, 'bad.json');
+      await writeFile(p, '{ not json');
+      await expect(loadFlow(p)).rejects.toThrow(/not valid JSON/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws on a JSON object that fails Flow validation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-cli-'));
+    try {
+      const p = join(dir, 'invalid.json');
+      await writeFile(p, JSON.stringify({ schemaVersion: '1.0', steps: [] }));
+      await expect(loadFlow(p)).rejects.toThrow(/Invalid Flow/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads and runs the committed smoke fixture to success', async () => {
+    const fixture = fileURLToPath(new URL('../fixtures/smoke.flow.json', import.meta.url));
+    const result = await runFlowFile(fixture);
+    expect(result.outcome).toBe('success');
+    expect(result.layers).toEqual({ web: false, desktop: false, screen: false, clipboard: false, excel: false });
+  });
+
+  it('validates the megaflow fixture and routes it to every layer', async () => {
+    // The §7 acceptance megaflow exercises nearly all features. Functional
+    // replay of web/desktop/screen needs Chrome + the sidecar + real targets
+    // (the user runs it manually), so here we assert it is a structurally
+    // valid Flow and that layer detection lights up every provider.
+    const fixture = fileURLToPath(new URL('../fixtures/megaflow.flow.json', import.meta.url));
+    const flow = await loadFlow(fixture);
+    expect(flow.steps).toHaveLength(32);
+    expect(collectLayers(flow)).toEqual({
+      web: true,
+      desktop: true,
+      screen: true,
+      clipboard: true,
+      excel: true,
+    });
+  });
+
+  it('runs an exceljs flow end-to-end on Mac (read → transform → write)', async () => {
+    // The Mac-runnable slice of the megaflow: prove the whole CLI → engine →
+    // excel-provider → disk chain works headlessly (no Chrome/sidecar needed).
+    const { createExcelProvider } = await import('@hermes/excel-provider');
+    const dir = await mkdtemp(join(tmpdir(), 'hermes-excel-acc-'));
+    try {
+      const xlsx = join(dir, 'data.xlsx');
+      const seed = createExcelProvider();
+      await seed.openWorkbook(xlsx);
+      seed.writeCell(xlsx, 'A1', 'hello');
+      seed.writeCell(xlsx, 'A2', 'world');
+      await seed.save(xlsx);
+      await seed.dispose();
+
+      const flow = flowOf([
+        { id: newId(), type: 'excel_open', enabled: true, params: { path: 'data.xlsx' } },
+        { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A1', into: 'a' } },
+        { id: newId(), type: 'excel_read', enabled: true, params: { path: 'data.xlsx', cell: 'A2', into: 'b' } },
+        { id: newId(), type: 'excel_write', enabled: true, params: { path: 'data.xlsx', cell: 'B1', value: '${var.a}-${var.b}' } },
+      ]);
+      const flowPath = join(dir, 'flow.json');
+      await writeFile(flowPath, JSON.stringify(flow));
+
+      const result = await runFlowFile(flowPath);
+      expect(result.outcome).toBe('success');
+      expect(result.layers.excel).toBe(true);
+
+      const verify = createExcelProvider();
+      await verify.openWorkbook(xlsx);
+      expect(verify.readCell(xlsx, 'B1')).toBe('hello-world');
+      await verify.dispose();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('validates the Excel key-send recipe fixture and routes it to the desktop layer', async () => {
+    // The recipe is a documented sample (Windows Excel shortcuts); we only
+    // assert it is a structurally valid Flow and its key_combo steps route to
+    // the desktop sidecar — functional replay is deferred to Windows (§5).
+    const fixture = fileURLToPath(
+      new URL('../fixtures/excel-keysend-postal-sort.flow.json', import.meta.url),
+    );
+    const flow = await loadFlow(fixture);
+    expect(flow.steps).toHaveLength(10);
+    expect(collectLayers(flow)).toEqual({
+      web: false,
+      desktop: true,
+      screen: false,
+      clipboard: false,
+      excel: false,
+    });
+  });
+});

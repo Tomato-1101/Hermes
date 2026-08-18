@@ -5,7 +5,7 @@
  * brokers calls from the IPC layer. One RunController instance per Hermes
  * app process (singleton).
  */
-import { readdir, stat } from 'node:fs/promises';
+import { cp, readdir, stat } from 'node:fs/promises';
 import type { BrowserWindow } from 'electron';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -25,10 +25,22 @@ import { Vault } from '@hermes/storage';
 import { collectSecretRefs } from '@hermes/ir';
 import { MacosDesktopAdapter } from '@hermes/desktop-adapter/macos';
 import { DesktopProvider } from '@hermes/desktop-adapter/desktop-provider';
-import { registerDesktopHandlers } from '@hermes/desktop-adapter/handlers';
+import {
+  registerClipboardHandlers,
+  registerDesktopHandlers,
+  registerScreenHandlers,
+} from '@hermes/desktop-adapter/handlers';
+import { ExcelProvider, createExcelProvider } from '@hermes/excel-provider';
+import { registerExcelHandlers } from '@hermes/excel-provider/handlers';
 import { flowProfileDir, flowsRoot } from './flow-paths.js';
 import { getSidecarClient } from './sidecar.js';
 import { DesktopRecorder } from './desktop-recorder.js';
+import {
+  loadSettings,
+  saveSettings,
+  type AppSettings,
+} from './app-settings.js';
+import { chromeSingletonLockExists, isChromeRunning } from './chrome-process.js';
 import type { EventPushPayload } from '../shared/ipc.js';
 import { IpcChannels } from '../shared/ipc.js';
 
@@ -39,16 +51,56 @@ export class RunController {
   private readonly vault: Vault;
   private provider: WebProvider | null = null;
   private desktop: DesktopProvider | null = null;
+  private excel: ExcelProvider | null = null;
   private recorder: WebRecorder | null = null;
   private desktopRecorder: DesktopRecorder | null = null;
   private currentRecordingFlowId: string | null = null;
   private currentRecordingLayer: 'web' | 'desktop' = 'web';
   private activeRun: { runId: string; abort: AbortController } | null = null;
   private window: BrowserWindow | null = null;
+  /** Persists across recording sessions so the renderer's toggle is sticky. */
+  private recordWaits = true;
+
+  private settingsCache: AppSettings | null = null;
 
   constructor() {
     this.store = new FlowStore(flowsRoot());
     this.vault = new Vault();
+  }
+
+  // ---- App settings ----
+
+  /**
+   * Lazily read settings.json from disk. We cache the parsed object so the
+   * hot path (every run/recording start) doesn't pay the file-read cost, but
+   * `getSettings({ force: true })` and any setSettings() call invalidate the
+   * cache so renderer-driven edits propagate without an app restart.
+   */
+  async getSettings(opts?: { force?: boolean }): Promise<AppSettings> {
+    if (this.settingsCache && !opts?.force) return this.settingsCache;
+    this.settingsCache = await loadSettings();
+    return this.settingsCache;
+  }
+
+  async setSettings(next: Partial<AppSettings>): Promise<void> {
+    // Base merge on disk state (not DEFAULT_SETTINGS) so a partial patch like
+    // { browser: { systemChromePath: '/x' } } doesn't blow away unrelated
+    // fields the user previously set. saveSettings() does its own
+    // mergeDeep-with-disk, but doing the merge here too keeps settingsCache
+    // self-consistent without a second loadSettings() round-trip.
+    const current = await this.getSettings();
+    const merged: AppSettings = {
+      browser: { ...current.browser, ...(next.browser ?? {}) },
+      humanize: { ...current.humanize, ...(next.humanize ?? {}) },
+    };
+    await saveSettings(merged);
+    this.settingsCache = merged;
+    // Force any active provider to be rebuilt on next use — the browser
+    // flags / user-data-dir may have changed.
+    if (this.provider) {
+      await this.provider.close().catch(() => undefined);
+      this.provider = null;
+    }
   }
 
   attachWindow(window: BrowserWindow): void {
@@ -107,7 +159,10 @@ export class RunController {
       steps: [],
       metadata: {
         origin: 'recorded',
-        targets: ['web'],
+        // Empty until something is actually recorded; startRun infers from
+        // steps so this hint can stay descriptive without controlling
+        // provider selection.
+        targets: [],
         requiredPermissions: [],
       },
     };
@@ -122,6 +177,62 @@ export class RunController {
   async saveFlow(flow: Flow): Promise<void> {
     flow.updatedAt = new Date().toISOString();
     await this.store.writeFlow(flow);
+  }
+
+  async deleteFlow(id: string): Promise<void> {
+    if (this.currentRecordingFlowId === id) {
+      throw new Error('Cannot delete the flow that is currently being recorded.');
+    }
+    if (this.activeRun) {
+      throw new Error('Cannot delete a flow while a run is in progress.');
+    }
+    // Drop any provider tied to the deleted profile dir before nuking the
+    // directory — otherwise Playwright keeps the file handles open and
+    // Chrome may rewrite Preferences during teardown, recreating the dir.
+    if (this.provider) {
+      await this.provider.close().catch(() => undefined);
+      this.provider = null;
+    }
+    await this.store.deleteFlow(id);
+  }
+
+  async duplicateFlow(srcId: string, newName: string): Promise<Flow> {
+    const now = new Date().toISOString();
+    const dstId = newId();
+    const copy = await this.store.duplicateFlow(srcId, {
+      // FlowStore.duplicateFlow only consumes id/name/meta from this skeleton —
+      // every other field is taken from the source flow on disk.
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      id: dstId,
+      name: newName,
+      createdAt: now,
+      updatedAt: now,
+      inputs: [],
+      outputs: [],
+      variables: [],
+      defaults: {
+        timeoutMs: 30_000,
+        retry: { attempts: 1 },
+        screenshotOnError: true,
+        waitBetweenStepsMs: 0,
+      },
+      steps: [],
+      metadata: { origin: 'recorded', targets: [], requiredPermissions: [] },
+    });
+    // Stamp fresh timestamps so the duplicate sorts to the top of the list
+    // and doesn't impersonate the source's creation date.
+    copy.createdAt = now;
+    copy.updatedAt = now;
+    await this.store.writeFlow(copy);
+    return copy;
+  }
+
+  async renameFlow(id: string, newName: string): Promise<Flow> {
+    const flow = await this.store.readFlow(id);
+    flow.name = newName;
+    flow.updatedAt = new Date().toISOString();
+    await this.store.writeFlow(flow);
+    return flow;
   }
 
   // ---- Recorder lifecycle ----
@@ -148,12 +259,14 @@ export class RunController {
     this.emit({ type: 'recorder:state', running: true });
 
     // Bump updatedAt so the sidebar shows fresh activity even before any
-    // steps land.
+    // steps land. Keep metadata.targets in sync as a descriptive hint
+    // (the runner derives needsWeb/needsDesktop from steps directly, so
+    // this hint is no longer load-bearing — but stays useful for UI badges).
     flow.updatedAt = new Date().toISOString();
-    if (layer === 'desktop' && !flow.metadata.targets.includes('desktop')) {
+    if (!flow.metadata.targets.includes(layer)) {
       flow.metadata = {
         ...flow.metadata,
-        targets: [...flow.metadata.targets, 'desktop'],
+        targets: [...flow.metadata.targets, layer],
       };
     }
     await this.store.writeFlow(flow);
@@ -170,6 +283,7 @@ export class RunController {
       // startRecording() call would skip re-initialization.
       const recorder = new WebRecorder();
       await recorder.attach(this.provider);
+      recorder.setRecordWaits(this.recordWaits);
       this.recorder = recorder;
       this.recorder.on('step', (e) => {
         // For password-style inputs, persist the plaintext into the Vault
@@ -224,6 +338,7 @@ export class RunController {
     // idempotent across start/stop.
     if (!this.desktopRecorder) {
       const recorder = new DesktopRecorder();
+      recorder.setRecordWaits(this.recordWaits);
       this.desktopRecorder = recorder;
       recorder.on('step', (e) => {
         this.emit({ type: 'recorder:step', step: e.step });
@@ -237,6 +352,13 @@ export class RunController {
       });
     }
     await this.desktopRecorder.start();
+  }
+
+  /** UI toggle — applied to any active or future recorder instance. */
+  setRecordWaits(enabled: boolean): void {
+    this.recordWaits = enabled;
+    this.recorder?.setRecordWaits(enabled);
+    this.desktopRecorder?.setRecordWaits(enabled);
   }
 
   async stopRecording(): Promise<void> {
@@ -258,8 +380,65 @@ export class RunController {
     if (this.activeRun) throw new Error('Another run is already in progress');
 
     const flow = await this.store.readFlow(flowId);
-    const needsWeb = flow.metadata.targets.includes('web') || flow.steps.some(stepHitsLayer('web'));
-    const needsDesktop = flow.metadata.targets.includes('desktop') || flow.steps.some(stepHitsLayer('desktop'));
+    // Drive provider selection from the actual recorded steps, not from
+    // metadata.targets. metadata.targets is a stale hint — createFlow seeds
+    // it as ['web'] and startRecording only ADDs to it, so a desktop-only
+    // recording ends up tagged ['web','desktop'] and used to spin up a
+    // Playwright Chrome the user never asked for. The steps themselves are
+    // the source of truth: WebRecorder emits target.layer='web' (or an
+    // open_url step), DesktopRecorder emits target.layer='desktop'.
+    const needsWeb = flow.steps.some(stepNeedsLayer('web'));
+    // Screen-layer steps (image / OCR / coords) ride the desktop sidecar, so
+    // they imply the desktop provider too — but they additionally need the
+    // screen handlers registered and an assets dir for image templates.
+    const needsScreen = flow.steps.some(stepNeedsLayer('screen'));
+    // Clipboard steps are targetless but also ride the sidecar.
+    const needsClipboard = flow.steps.some(stepUsesClipboard);
+    const needsDesktop =
+      needsScreen || needsClipboard || flow.steps.some(stepNeedsLayer('desktop'));
+    // Excel steps are file-based (exceljs) and need no OS provider — just the
+    // in-process workbook provider + handlers. Independent of desktop.
+    const needsExcel = flow.steps.some(stepUsesExcel);
+
+    // Log the decision so the user can see in the log panel WHY a provider
+    // is (or isn't) about to start. If "browser opens on a desktop-only
+    // flow", this line proves whether the fix is actually live.
+    this.emit({
+      type: 'log',
+      level: 'info',
+      message: `再生: needsWeb=${needsWeb} needsDesktop=${needsDesktop} (steps=${flow.steps.length})`,
+    });
+
+    // Fold pre-click mouse moves INTO the preceding `wait` step so the
+    // click fires at the recorded rhythm instead of "wait, then sudden
+    // teleport-fast move, then click" with the move duration tacked on
+    // top. See absorbDesktopMovesIntoWaits() for the rewrite rules.
+    if (needsDesktop) {
+      const settings = await this.getSettings();
+      const absorbed = absorbDesktopMovesIntoWaits(
+        flow.steps,
+        settings.humanize.mouseSpeedPxPerSec,
+      );
+      if (absorbed.rewrites > 0) {
+        flow.steps = absorbed.steps;
+        this.emit({
+          type: 'log',
+          level: 'info',
+          message: `wait→click ${absorbed.rewrites} 件で移動を待ち時間に吸収しました`,
+        });
+        if (absorbed.compressed > 0) {
+          // Wait-time priority: when natural move > recorded wait, the
+          // move gets compressed into the wait window so the click
+          // lands on the recorded beat. Surface the worst-case ratio
+          // so the user sees their mouseSpeedPxPerSec was overridden.
+          this.emit({
+            type: 'log',
+            level: 'warn',
+            message: `うち ${absorbed.compressed} 件は待ち時間が短いため、録画リズム優先でマウスを最大 ${absorbed.maxCompressionRatio.toFixed(1)}× に加速しました`,
+          });
+        }
+      }
+    }
 
     if (needsWeb) {
       await this.ensureProviderFor(flowId);
@@ -268,10 +447,16 @@ export class RunController {
     if (needsDesktop) {
       this.ensureDesktopProvider();
     }
+    if (needsExcel) {
+      this.ensureExcelProvider();
+    }
 
     const registry = new HandlerRegistry();
     registerWebHandlers(registry);
     if (this.desktop) registerDesktopHandlers(registry);
+    if (this.desktop && needsScreen) registerScreenHandlers(registry);
+    if (this.desktop && needsClipboard) registerClipboardHandlers(registry);
+    if (this.excel && needsExcel) registerExcelHandlers(registry);
 
     // Pre-fetch every secret the flow references so the engine can
     // interpolate without itself touching keytar. Unknown secrets resolve
@@ -286,9 +471,31 @@ export class RunController {
     const runId = newId();
     this.activeRun = { runId, abort };
 
-    const providers: { web?: WebProvider; desktop?: DesktopProvider } = {};
+    const providers: { web?: WebProvider; desktop?: DesktopProvider; excel?: ExcelProvider } = {};
     if (this.provider) providers.web = this.provider;
     if (this.desktop) providers.desktop = this.desktop;
+    if (this.excel) providers.excel = this.excel;
+
+    // Inject AppSettings.humanize as a pseudo-input. Web/desktop handlers
+    // pick it up under the same key (ctx.vars.__hermes_humanize__), so the
+    // step.params override path keeps working unchanged. Flow-level
+    // defaults.humanize wins over AppSettings when present.
+    const settings = await this.getSettings();
+    const flowHumanize = flow.defaults['humanize'] as
+      | Partial<typeof settings.humanize>
+      | undefined;
+    const humanize = { ...settings.humanize, ...(flowHumanize ?? {}) };
+    const seededInputs: Record<string, unknown> = {
+      ...(inputs ?? {}),
+      __hermes_humanize__: humanize,
+      // Image-selector assetRefs and Excel `path`s are stored relative to the
+      // flow dir (e.g. "assets/btn.png", "data.xlsx"); the screen and excel
+      // handlers resolve them against this base. Mirrors runFlowFile's
+      // dirname(flow file) in the CLI.
+      ...(needsScreen || needsExcel
+        ? { __hermes_assets_dir__: this.store.flowDir(flowId) }
+        : {}),
+    };
 
     const executor = new StepExecutor({
       registry,
@@ -329,9 +536,15 @@ export class RunController {
 
     // run async; don't await — the IPC handler returns immediately with runId.
     void executor
-      .run(flow, { signal: abort.signal, ...(inputs ? { inputs } : {}) })
+      .run(flow, { signal: abort.signal, inputs: seededInputs })
       .finally(() => {
         if (this.activeRun?.runId === runId) this.activeRun = null;
+        // Excel workbooks are held in memory per run; drop them so the next
+        // run reopens from disk (auto-save already flushed every write).
+        if (this.excel) {
+          void this.excel.dispose();
+          this.excel = null;
+        }
       });
 
     return runId;
@@ -361,22 +574,72 @@ export class RunController {
 
   private async ensureProviderFor(flowId: string): Promise<void> {
     if (this.provider && this.provider.isStarted()) return;
-    const profile = flowProfileDir(flowId);
-    // Prefer the system-installed Google Chrome over Playwright's bundled
-    // Chromium so we don't have to download a separate browser binary. If
-    // Chrome isn't installed the WebProvider will fall back to Chromium —
-    // user can install Chrome from the official site or invoke
-    // `npx playwright install chromium` themselves.
+    const settings = await this.getSettings();
+    const channel = settings.browser.channel ?? 'chrome';
+    let profileDir = flowProfileDir(flowId);
+
+    if (settings.browser.mode === 'system-chrome') {
+      const chromePath = settings.browser.systemChromePath;
+      if (!chromePath) {
+        throw new Error(
+          'ブラウザモードが「system-chrome」ですが Chrome プロファイルが未設定です。「アプリ設定」からプロファイルを選択してください。',
+        );
+      }
+      if (await isChromeRunning()) {
+        const msg =
+          'Google Chrome がまだ起動しています。共有プロファイルを使う前に Cmd-Q で完全終了してください。';
+        this.emit({ type: 'log', level: 'error', message: msg });
+        throw new Error(msg);
+      }
+      // SingletonLock survives crashes / forced kills. If Chrome is "not
+      // running" by pgrep but the lock file is still on disk, Playwright
+      // will fail with a confusing "Target page closed" — bail out with a
+      // user-actionable error instead.
+      if (chromeSingletonLockExists(chromePath)) {
+        const msg =
+          'Chrome のロックファイル (SingletonLock) がまだ残っています。Chrome を一度起動して正常終了するか、プロファイル内の SingletonLock を削除してください。';
+        this.emit({ type: 'log', level: 'error', message: msg });
+        throw new Error(msg);
+      }
+      profileDir = chromePath;
+    } else if (settings.browser.mode === 'system-chrome-import') {
+      const chromePath = settings.browser.systemChromePath;
+      if (!chromePath) {
+        throw new Error(
+          'ブラウザモードが「system-chrome-import」ですが Chrome プロファイルが未設定です。「アプリ設定」からプロファイルを選択してください。',
+        );
+      }
+      // import モードは Chrome が起動中でも衝突しない（コピーするだけ）が、
+      // Cookies の SQLite を Chrome が WAL モードで書いている最中だと
+      // 整合性が崩れたコピーになる。動作中の Chrome があれば一言警告だけ
+      // 出して続行する（強行できる方が利便性が高い）。
+      if (await isChromeRunning()) {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: 'Chrome が起動中のままインポートします。Cookies の整合性が崩れる可能性があります。',
+        });
+      }
+      profileDir = flowProfileDir(flowId);
+      await importChromeProfile(chromePath, profileDir).catch((err) => {
+        this.emit({
+          type: 'log',
+          level: 'warn',
+          message: `Chrome profile import failed: ${(err as Error).message}`,
+        });
+      });
+    }
+
     this.provider = createWebProvider({
-      profileDir: profile,
+      profileDir,
       headless: false,
-      channel: 'chrome',
+      channel,
     });
     try {
       await this.provider.start();
     } catch (err) {
       this.provider = null;
-      throw err;
+      throw translatePlaywrightLaunchError(err, settings.browser.mode);
     }
   }
 
@@ -388,6 +651,11 @@ export class RunController {
     const client = getSidecarClient();
     const adapter = new MacosDesktopAdapter({ client });
     this.desktop = new DesktopProvider(adapter);
+  }
+
+  private ensureExcelProvider(): void {
+    if (this.excel) return;
+    this.excel = createExcelProvider();
   }
 
   async dispose(): Promise<void> {
@@ -403,6 +671,10 @@ export class RunController {
     if (this.desktop) {
       await this.desktop.adapter.dispose();
       this.desktop = null;
+    }
+    if (this.excel) {
+      await this.excel.dispose();
+      this.excel = null;
     }
     this.currentRecordingFlowId = null;
   }
@@ -435,15 +707,152 @@ function extractSecretName(step: Step): string | null {
   return m && m[1] ? m[1] : null;
 }
 
-function stepHitsLayer(layer: 'web' | 'desktop'): (s: Step) => boolean {
+/**
+ * Returns true when `step` (or one of its nested children / branch bodies)
+ * requires the given provider to be running. We look at `step.target.layer`
+ * first, then fall back to type-based heuristics for steps that carry no
+ * target — `open_url` is web-only by design, since only WebProvider knows
+ * how to navigate. `if`/`loop` containers recurse into their children.
+ */
+const WEB_IMPLIED_TYPES = new Set(['open_url']);
+
+function stepNeedsLayer(layer: 'web' | 'desktop' | 'screen'): (s: Step) => boolean {
   return (step) => {
     if (step.target?.layer === layer) return true;
-    if (step.children) return step.children.some(stepHitsLayer(layer));
-    if (step.branches) {
-      return step.branches.some((b) => b.steps.some(stepHitsLayer(layer)));
+    if (layer === 'web' && WEB_IMPLIED_TYPES.has(step.type)) return true;
+    if (step.children && step.children.some(stepNeedsLayer(layer))) return true;
+    if (step.branches && step.branches.some((b) => b.steps.some(stepNeedsLayer(layer)))) {
+      return true;
     }
     return false;
   };
+}
+
+/** Clipboard steps are targetless, so detection is by step type (recursive). */
+function stepUsesClipboard(step: Step): boolean {
+  if (step.type === 'clipboard_read' || step.type === 'clipboard_write') return true;
+  if (step.children && step.children.some(stepUsesClipboard)) return true;
+  if (step.branches && step.branches.some((b) => b.steps.some(stepUsesClipboard))) return true;
+  return false;
+}
+
+/** Excel (exceljs) steps are targetless; detect by the `excel_` type prefix. */
+function stepUsesExcel(step: Step): boolean {
+  if (step.type.startsWith('excel_')) return true;
+  if (step.children && step.children.some(stepUsesExcel)) return true;
+  if (step.branches && step.branches.some((b) => b.steps.some(stepUsesExcel))) return true;
+  return false;
+}
+
+/**
+ * Rewrite a `wait(N) → click(@x,y)` sequence (when the click is desktop-
+ * layer with coords) so the cursor STARTS MOVING during the wait and
+ * arrives at the click target exactly when the click fires. The recorded
+ * inter-click rhythm is preserved.
+ *
+ * Concretely, for each such pair we:
+ *   - Compute the natural move duration M = distance / mouseSpeedPxPerSec.
+ *   - If M ≤ waitMs: shrink the wait to (waitMs − M); the click's own
+ *     pre-move (at the user's configured speed) consumes the residual M.
+ *     Net wall-clock time from previous action: still waitMs.
+ *   - If M > waitMs: the natural move can't fit. Compress the move into
+ *     waitMs (faster effective speed for this hop) and zero out the wait.
+ *     The click STILL fires waitMs after the previous action — the user's
+ *     "don't shift click timing" rule wins over the "move slower than the
+ *     recording" rule.
+ *
+ * Mouse-position tracking is purely static: each desktop click moves the
+ * cursor to its coords, so we follow along by remembering the last clicked
+ * coords. If we lose track (non-coord step, web layer, etc.) we wait until
+ * the next click to start tracking again — that click's move runs at
+ * natural duration with no wait absorption.
+ *
+ * Returns a possibly-new steps array and a rewrites count for the log.
+ * Original Step objects are NOT mutated — affected steps are shallow-copied.
+ */
+function absorbDesktopMovesIntoWaits(
+  steps: Step[],
+  speedPxPerSec: number,
+): { steps: Step[]; rewrites: number; compressed: number; maxCompressionRatio: number } {
+  const out = steps.slice();
+  let knownPos: { x: number; y: number } | null = null;
+  let rewrites = 0;
+  // Separate counter for the wait-priority compression path: the move
+  // would naturally take longer than the recorded wait, so we squeeze
+  // it into the wait window so the click still lands at the recorded
+  // rhythm. Surfaced in the log so the user can tell when their
+  // configured mouseSpeedPxPerSec is being violated to honour timing.
+  let compressed = 0;
+  let maxCompressionRatio = 1;
+  const safeSpeed = Math.max(50, speedPxPerSec);
+
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i]!;
+    const prev = i > 0 ? out[i - 1] : null;
+    if (cur.type !== 'click' || cur.target?.layer !== 'desktop') {
+      // Anything else either resets our positional knowledge (a wait alone,
+      // a key combo, a type) or we just don't model it. Update knownPos
+      // only on desktop clicks below.
+      continue;
+    }
+    const coordCand = cur.target.candidates.find((c) => c.kind === 'coords');
+    if (!coordCand || coordCand.kind !== 'coords') {
+      knownPos = null;
+      continue;
+    }
+    const dst = { x: coordCand.x, y: coordCand.y };
+
+    if (prev && prev.type === 'wait' && knownPos) {
+      const waitMs = Number(prev.params?.['ms'] ?? 0);
+      if (waitMs > 0) {
+        const dx = dst.x - knownPos.x;
+        const dy = dst.y - knownPos.y;
+        const distance = Math.hypot(dx, dy);
+        const naturalMoveMs = (distance / safeSpeed) * 1000;
+        if (naturalMoveMs <= waitMs) {
+          // Wait covers the move. Shrink wait by exactly the natural move
+          // duration; the click does its own move at natural speed.
+          const remainingWait = Math.max(0, Math.round(waitMs - naturalMoveMs));
+          const newPrev: Step = {
+            ...prev,
+            params: { ...(prev.params ?? {}), ms: remainingWait },
+          };
+          // Mark the wait so user can see in the IR what was absorbed.
+          newPrev.label = `${remainingWait}ms 待機（うち ${Math.round(naturalMoveMs)}ms は移動と重ね）`;
+          out[i - 1] = newPrev;
+          rewrites++;
+        } else {
+          // Move at the configured speed wouldn't fit in the recorded
+          // wait. User policy is "wait time priority": the click must
+          // land at the same beat as the recording, so we squeeze the
+          // move into exactly waitMs by passing durationMsOverride.
+          // This temporarily violates mouseSpeedPxPerSec — the move
+          // runs at an EFFECTIVE speed of (distance / waitMs) px/s,
+          // which can be faster than the setting. We log the ratio so
+          // the user knows their setting was overridden.
+          const ratio = naturalMoveMs / waitMs;
+          if (ratio > maxCompressionRatio) maxCompressionRatio = ratio;
+          const newPrev: Step = {
+            ...prev,
+            params: { ...(prev.params ?? {}), ms: 0 },
+            label: `${waitMs}ms 待機（移動に置換 ×${ratio.toFixed(1)} 速度）`,
+          };
+          const newCur: Step = {
+            ...cur,
+            params: { ...(cur.params ?? {}), moveDurationMs: waitMs },
+          };
+          out[i - 1] = newPrev;
+          out[i] = newCur;
+          rewrites++;
+          compressed++;
+        }
+      }
+    }
+
+    knownPos = dst;
+  }
+
+  return { steps: out, rewrites, compressed, maxCompressionRatio };
 }
 
 function shortenUrl(url: string): string {
@@ -470,6 +879,109 @@ function normalizeStartUrl(input: string): string {
   } catch {
     throw new Error(`invalid URL: ${input}`);
   }
+}
+
+/**
+ * Copy the user-visible parts of a Chrome profile (cookies, localStorage,
+ * IndexedDB, Preferences) into a Hermes-managed profile directory.
+ *
+ * We deliberately skip Chrome's caches and per-process Singleton* locks so
+ * the embedded Chromium doesn't fight the original Chrome over file
+ * ownership, and so the copy completes in a fraction of a second instead of
+ * gigabytes worth of cache.
+ */
+async function importChromeProfile(srcChromePath: string, dstProfileDir: string): Promise<void> {
+  // Source layout: <userDataDir>/<ProfileFolder>/{Cookies,Login Data,...}
+  // We accept either a path that already points at a profile folder
+  // ("Default", "Profile 1", ...) or the parent user-data-dir; if the latter
+  // we look for ./Default. `userDataDir` is always the parent — `Local State`
+  // and other root-level files live there, NOT inside `Default/`.
+  const { existsSync } = await import('node:fs');
+  if (!existsSync(srcChromePath)) {
+    throw new Error(`Chrome profile path does not exist: ${srcChromePath}`);
+  }
+  const { join, basename } = await import('node:path');
+  let fromProfile = srcChromePath;
+  let fromUserDataDir = join(srcChromePath, '..');
+  if (existsSync(join(srcChromePath, 'Default')) && !existsSync(join(srcChromePath, 'Cookies'))) {
+    // Caller passed the user-data-dir. Profile is one level deeper.
+    fromProfile = join(srcChromePath, 'Default');
+    fromUserDataDir = srcChromePath;
+  }
+
+  // Per-profile state — login cookies, history, preferences, local storage.
+  const wantedProfile = [
+    'Cookies',
+    'Cookies-journal',
+    'Login Data',
+    'Login Data-journal',
+    'Preferences',
+    'Secure Preferences',
+    'Local Storage',
+    'IndexedDB',
+    'Session Storage',
+    'Web Data',
+    'History',
+    'Bookmarks',
+    'Favicons',
+    'Top Sites',
+    'Network',
+  ];
+  // user-data-dir level state. `Local State` holds the AES-GCM key used to
+  // decrypt Cookies — without it Chrome can't decrypt the cookie values it
+  // just copied, so the user appears logged out and reCAPTCHA fires.
+  const wantedRoot = ['Local State'];
+
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(dstProfileDir, { recursive: true });
+  // Mirror Chrome's layout: profile data inside `Default/`, root-level files
+  // (Local State) at the user-data-dir root that the embedded Chromium
+  // launches against.
+  const dstProfile = join(dstProfileDir, 'Default');
+  await mkdir(dstProfile, { recursive: true });
+
+  for (const name of wantedProfile) {
+    const src = join(fromProfile, name);
+    const dst = join(dstProfile, name);
+    if (!existsSync(src)) continue;
+    await cp(src, dst, { recursive: true, force: true, errorOnExist: false }).catch(() => undefined);
+  }
+  for (const name of wantedRoot) {
+    const src = join(fromUserDataDir, name);
+    const dst = join(dstProfileDir, name);
+    if (!existsSync(src)) continue;
+    await cp(src, dst, { recursive: true, force: true, errorOnExist: false }).catch(() => undefined);
+  }
+  // Track which source profile we cloned, in case we want a "re-import" UI
+  // later. Cheap to write, harmless if absent.
+  void basename;
+}
+
+/**
+ * Playwright's launchPersistentContext throws cryptic errors when Chrome's
+ * SingletonLock blocks it — "Target page, context or browser has been closed"
+ * or the Chrome stdout "既存のブラウザ セッションで開いています". Both mean
+ * the same thing to the user: "quit Chrome first". Translate them so the
+ * renderer log shows actionable text instead of Playwright internals.
+ */
+function translatePlaywrightLaunchError(err: unknown, mode: AppSettings['browser']['mode']): Error {
+  const original = err instanceof Error ? err : new Error(String(err));
+  const msg = original.message || '';
+  const looksLikeSingletonContention =
+    /Target (page|context|browser) (has been )?closed/i.test(msg) ||
+    /既存のブラウザ\s*セッション/.test(msg) ||
+    /SingletonLock/i.test(msg) ||
+    /ProcessSingleton/i.test(msg);
+  if (looksLikeSingletonContention) {
+    const hint =
+      mode === 'system-chrome'
+        ? 'Chrome がまだ起動しています。Cmd-Q で完全終了してから再生してください。それでも続く場合は「アプリ設定」でモードを「system-chrome-import」に切り替えてください。'
+        : 'ブラウザの起動に失敗しました。Chrome が完全終了しているか、選択したプロファイルが他のプロセスから使われていないか確認してください。';
+    const wrapped = new Error(hint);
+    (wrapped as { cause?: unknown }).cause = original;
+    return wrapped;
+  }
+  return original;
 }
 
 /** Diagnostic helper for the flow listing UI. */

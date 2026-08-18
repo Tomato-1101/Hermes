@@ -14,34 +14,86 @@ function makeFakeClient(handlers: Record<string, (params: unknown) => unknown>) 
 }
 
 describe('MacosDesktopAdapter', () => {
-  it('translates click into mouse.click RPC', async () => {
+  it('translates click into mouse.click RPC (with instant skipping humanization)', async () => {
     const client = makeFakeClient({
       'mouse.click': () => ({ ok: true }),
     });
     const adapter = new MacosDesktopAdapter({ client });
-    await adapter.click({ x: 100, y: 200 }, { clicks: 2 });
+    await adapter.click({ x: 100, y: 200 }, { clicks: 2, instant: true });
     expect(client.call).toHaveBeenCalledWith('mouse.click', {
       x: 100,
       y: 200,
       button: 'left',
       clickCount: 2,
     });
+    // instant should NOT touch position/move_smooth
+    expect(client.call).toHaveBeenCalledTimes(1);
   });
 
   it('uses element center when handle is passed', async () => {
     const client = makeFakeClient({ 'mouse.click': () => ({ ok: true }) });
     const adapter = new MacosDesktopAdapter({ client });
-    await adapter.click({
-      selectorEcho: { kind: 'coords', x: 0, y: 0, anchor: 'screen' },
-      bbox: { x: 10, y: 20, w: 40, h: 80 },
-      role: 'button',
-    });
+    await adapter.click(
+      {
+        selectorEcho: { kind: 'coords', x: 0, y: 0, anchor: 'screen' },
+        bbox: { x: 10, y: 20, w: 40, h: 80 },
+        role: 'button',
+      },
+      { instant: true },
+    );
     expect(client.call).toHaveBeenCalledWith('mouse.click', {
       x: 30,
       y: 60,
       button: 'left',
       clickCount: 1,
     });
+  });
+
+  it('humanized click: position → move_smooth → click', async () => {
+    const order: string[] = [];
+    const client = makeFakeClient({
+      'mouse.position': () => {
+        order.push('mouse.position');
+        return { x: 0, y: 0 };
+      },
+      'mouse.move_smooth': (params) => {
+        order.push('mouse.move_smooth');
+        const p = params as Record<string, unknown>;
+        expect(p['toX']).toBe(800);
+        expect(p['toY']).toBe(600);
+        expect(typeof p['steps']).toBe('number');
+        expect(typeof p['durationMs']).toBe('number');
+        return { ok: true };
+      },
+      'mouse.click': () => {
+        order.push('mouse.click');
+        return { ok: true };
+      },
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.click({ x: 800, y: 600 }, { speedPxPerSec: 800 });
+    expect(order).toEqual(['mouse.position', 'mouse.move_smooth', 'mouse.click']);
+  });
+
+  it('humanized click falls back to plain mouse.move when position lookup throws', async () => {
+    const order: string[] = [];
+    const client = makeFakeClient({
+      'mouse.position': () => {
+        order.push('mouse.position');
+        throw new Error('not implemented');
+      },
+      'mouse.move': () => {
+        order.push('mouse.move');
+        return { ok: true };
+      },
+      'mouse.click': () => {
+        order.push('mouse.click');
+        return { ok: true };
+      },
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.click({ x: 100, y: 100 });
+    expect(order).toEqual(['mouse.position', 'mouse.move', 'mouse.click']);
   });
 
   it('keyCombo forwards arrays', async () => {
@@ -72,7 +124,21 @@ describe('MacosDesktopAdapter', () => {
     ]);
     expect(calls[0]?.p).toEqual({ keys: ['primary', 'a'] });
     expect(calls[1]?.p).toEqual({ keys: ['delete'] });
-    expect(calls[2]?.p).toEqual({ text: 'hello', intervalMs: 0 });
+    // Default humanized typing interval is 50ms/char.
+    expect(calls[2]?.p).toEqual({ text: 'hello', intervalMs: 50 });
+  });
+
+  it('type with explicit intervalMs preserves the caller value', async () => {
+    const captured: Record<string, unknown>[] = [];
+    const client = makeFakeClient({
+      'keyboard.type': (p) => {
+        captured.push(p as Record<string, unknown>);
+        return { ok: true };
+      },
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.type('hi', { intervalMs: 5 });
+    expect(captured[0]).toEqual({ text: 'hi', intervalMs: 5 });
   });
 
   it('findElement with coords returns ElementHandle', async () => {
@@ -131,13 +197,135 @@ describe('MacosDesktopAdapter', () => {
     expect(apps[1]?.active).toBe(false);
   });
 
-  it('scroll/drag/screenshot/focusApp throw not-yet-implemented errors', async () => {
+  it('scroll translates into mouse.scroll RPC at the target point', async () => {
+    const client = makeFakeClient({ 'mouse.scroll': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.scroll({ x: 120, y: 240 }, 0, -30);
+    expect(client.call).toHaveBeenCalledWith('mouse.scroll', { x: 120, y: 240, dx: 0, dy: -30 });
+  });
+
+  it('scroll uses element center when a handle is passed', async () => {
+    const client = makeFakeClient({ 'mouse.scroll': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.scroll(
+      {
+        selectorEcho: { kind: 'coords', x: 0, y: 0, anchor: 'screen' },
+        bbox: { x: 10, y: 20, w: 40, h: 80 },
+        role: 'list',
+      },
+      5,
+      10,
+    );
+    expect(client.call).toHaveBeenCalledWith('mouse.scroll', { x: 30, y: 60, dx: 5, dy: 10 });
+  });
+
+  it('drag translates into mouse.drag RPC with from/to endpoints', async () => {
+    const client = makeFakeClient({ 'mouse.drag': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.drag({ x: 10, y: 20 }, { x: 200, y: 300 });
+    expect(client.call).toHaveBeenCalledWith('mouse.drag', {
+      fromX: 10,
+      fromY: 20,
+      toX: 200,
+      toY: 300,
+    });
+  });
+
+  it('findImageOnScreen sends base64 template + opts and maps a hit to center/bbox', async () => {
+    const calls: { m: string; p: unknown }[] = [];
+    const client = makeFakeClient({
+      'screen.findImage': (p) => {
+        calls.push({ m: 'screen.findImage', p });
+        return { found: true, score: 0.93, x: 10, y: 20, w: 40, h: 16, cx: 30, cy: 28 };
+      },
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    const match = await adapter.findImageOnScreen(Buffer.from('PNGDATA'), {
+      threshold: 0.85,
+      scaleInvariant: true,
+      region: { x: 0, y: 0, w: 100, h: 100 },
+    });
+    expect(calls[0]?.p).toEqual({
+      template: Buffer.from('PNGDATA').toString('base64'),
+      threshold: 0.85,
+      scaleInvariant: true,
+      region: { x: 0, y: 0, w: 100, h: 100 },
+    });
+    expect(match).toEqual({
+      found: true,
+      score: 0.93,
+      center: { x: 30, y: 28 },
+      bbox: { x: 10, y: 20, w: 40, h: 16 },
+    });
+  });
+
+  it('findImageOnScreen maps a miss to found:false with the best score', async () => {
+    const client = makeFakeClient({ 'screen.findImage': () => ({ found: false, score: 0.4 }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    const match = await adapter.findImageOnScreen(Buffer.from('x'));
+    expect(match).toEqual({ found: false, score: 0.4 });
+  });
+
+  it('readScreenText maps observations into bbox-shaped results', async () => {
+    const client = makeFakeClient({
+      'screen.ocr': () => ({
+        text: 'Hello\nWorld',
+        observations: [
+          { text: 'Hello', confidence: 0.99, x: 1, y: 2, w: 30, h: 12 },
+          { text: 'World', confidence: 0.95, x: 1, y: 20, w: 32, h: 12 },
+        ],
+      }),
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    const res = await adapter.readScreenText({ region: { x: 0, y: 0, w: 200, h: 80 }, languages: ['en-US'] });
+    expect(res.text).toBe('Hello\nWorld');
+    expect(res.observations[0]).toEqual({
+      text: 'Hello',
+      confidence: 0.99,
+      bbox: { x: 1, y: 2, w: 30, h: 12 },
+    });
+    expect(client.call).toHaveBeenCalledWith('screen.ocr', {
+      region: { x: 0, y: 0, w: 200, h: 80 },
+      languages: ['en-US'],
+    });
+  });
+
+  it('readClipboard maps clipboard.read result text', async () => {
+    const client = makeFakeClient({ 'clipboard.read': () => ({ text: 'on board ✂︎' }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    expect(await adapter.readClipboard()).toBe('on board ✂︎');
+    expect(client.call).toHaveBeenCalledWith('clipboard.read');
+  });
+
+  it('readClipboard returns "" when the sidecar reports no text', async () => {
+    const client = makeFakeClient({ 'clipboard.read': () => ({ text: '' }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    expect(await adapter.readClipboard()).toBe('');
+  });
+
+  it('writeClipboard sends the text to clipboard.write', async () => {
+    const client = makeFakeClient({ 'clipboard.write': () => ({ ok: true }) });
+    const adapter = new MacosDesktopAdapter({ client });
+    await adapter.writeClipboard('値 to copy');
+    expect(client.call).toHaveBeenCalledWith('clipboard.write', { text: '値 to copy' });
+  });
+
+  it('focusApp still throws not-yet-implemented', async () => {
     const client = makeFakeClient({});
     const adapter = new MacosDesktopAdapter({ client });
-    await expect(adapter.scroll({ x: 0, y: 0 }, 0, 10)).rejects.toBeInstanceOf(DesktopAdapterError);
-    await expect(adapter.drag({ x: 0, y: 0 }, { x: 0, y: 1 })).rejects.toBeInstanceOf(DesktopAdapterError);
-    await expect(adapter.screenshot()).rejects.toBeInstanceOf(DesktopAdapterError);
     await expect(adapter.focusApp({ bundleId: 'x' })).rejects.toBeInstanceOf(DesktopAdapterError);
+  });
+
+  it('screenshot calls screen.capture and returns a Buffer of the decoded PNG', async () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
+    const client = makeFakeClient({
+      'screen.capture': () => ({ data: pngBytes.toString('base64'), w: 100, h: 50, format: 'png' }),
+    });
+    const adapter = new MacosDesktopAdapter({ client });
+    const buf = await adapter.screenshot();
+    expect(Buffer.isBuffer(buf)).toBe(true);
+    expect(buf.equals(pngBytes)).toBe(true);
+    expect(client.call).toHaveBeenCalledWith('screen.capture', expect.any(Object));
   });
 
   it('dispose forwards to client', async () => {

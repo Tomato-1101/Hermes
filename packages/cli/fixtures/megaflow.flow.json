@@ -1,0 +1,565 @@
+{
+  "schemaVersion": "1.0",
+  "id": "megaflow-acceptance",
+  "name": "Hermes メガフロー検収 (Mac ほぼ全機能)",
+  "description": "フェーズ1の検収用。Web(自己完結data:URL)・待機・制御フロー・clipboard・screen層・デスクトップ操作・Excel(exceljs)・log/manual_pause をほぼ全部含む。screen/desktop はターゲット依存のためプレースホルダ座標/画像で、実機では各自の対象に合わせて調整する。",
+  "createdAt": "2026-05-31T00:00:00.000Z",
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "inputs": [],
+  "outputs": [],
+  "variables": [],
+  "defaults": {
+    "timeoutMs": 15000,
+    "retry": {
+      "attempts": 1
+    },
+    "screenshotOnError": false,
+    "waitBetweenStepsMs": 100
+  },
+  "metadata": {
+    "origin": "recorded",
+    "targets": [
+      "web",
+      "desktop"
+    ],
+    "requiredPermissions": [
+      "accessibility",
+      "input-monitoring",
+      "screen-recording"
+    ]
+  },
+  "steps": [
+    {
+      "id": "mf-00-log-start",
+      "type": "log",
+      "enabled": true,
+      "label": "メガフロー開始",
+      "params": {
+        "level": "info",
+        "message": "Hermes メガフロー検収を開始します"
+      }
+    },
+    {
+      "id": "mf-01-pause",
+      "type": "manual_pause",
+      "enabled": true,
+      "label": "対象アプリ前面化後に再開",
+      "params": {
+        "message": "デスクトップ操作対象アプリを起動・前面化し、screen用テンプレート画像を配置してから再開してください"
+      }
+    },
+    {
+      "id": "mf-02-open",
+      "type": "open_url",
+      "enabled": true,
+      "label": "Webターゲットを開く",
+      "params": {
+        "url": "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%20lang%3D%22ja%22%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3EHermes%20Megaflow%20Web%20Target%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%0A%3Ch1%3EHermes%20Megaflow%3C%2Fh1%3E%0A%3Clabel%3E%E5%90%8D%E5%89%8D%20%3Cinput%20id%3D%22name%22%20data-testid%3D%22name%22%20type%3D%22text%22%3E%3C%2Flabel%3E%0A%3Clabel%3E%E3%83%97%E3%83%A9%E3%83%B3%20%3Cselect%20id%3D%22plan%22%20data-testid%3D%22plan%22%3E%3Coption%20value%3D%22free%22%3EFree%3C%2Foption%3E%3Coption%20value%3D%22pro%22%3EPro%3C%2Foption%3E%3C%2Fselect%3E%3C%2Flabel%3E%0A%3Cbutton%20id%3D%22go%22%20data-testid%3D%22go%22%3E%E9%80%81%E4%BF%A1%3C%2Fbutton%3E%0A%3Cdiv%20id%3D%22out%22%20data-testid%3D%22out%22%3E%3C%2Fdiv%3E%0A%3Cscript%3Edocument.getElementById(%22go%22).addEventListener(%22click%22%2Cfunction()%7Bdocument.getElementById(%22out%22).textContent%3Ddocument.getElementById(%22name%22).value%2B%22%2F%22%2Bdocument.getElementById(%22plan%22).value%3B%7D)%3B%3C%2Fscript%3E%0A%3C%2Fbody%3E%3C%2Fhtml%3E",
+        "waitUntil": "load"
+      }
+    },
+    {
+      "id": "mf-03-wait-load",
+      "type": "wait_for",
+      "enabled": true,
+      "label": "ページ読込待ち",
+      "params": {
+        "kind": "web.load",
+        "state": "load",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "mf-04-type-name",
+      "type": "type",
+      "enabled": true,
+      "label": "名前を入力",
+      "target": {
+        "layer": "web",
+        "candidates": [
+          {
+            "kind": "testid",
+            "value": "name"
+          }
+        ]
+      },
+      "params": {
+        "text": "Hermes",
+        "clearFirst": true
+      }
+    },
+    {
+      "id": "mf-05-select-plan",
+      "type": "type",
+      "enabled": true,
+      "label": "プランを選択",
+      "target": {
+        "layer": "web",
+        "candidates": [
+          {
+            "kind": "testid",
+            "value": "plan"
+          }
+        ]
+      },
+      "params": {
+        "text": "pro",
+        "control": "select"
+      }
+    },
+    {
+      "id": "mf-06-click-go",
+      "type": "click",
+      "enabled": true,
+      "label": "送信をクリック",
+      "target": {
+        "layer": "web",
+        "candidates": [
+          {
+            "kind": "testid",
+            "value": "go"
+          }
+        ]
+      }
+    },
+    {
+      "id": "mf-07-wait-out",
+      "type": "wait_for",
+      "enabled": true,
+      "label": "結果表示を待つ",
+      "target": {
+        "layer": "web",
+        "candidates": [
+          {
+            "kind": "testid",
+            "value": "out"
+          }
+        ]
+      },
+      "params": {
+        "kind": "web.element",
+        "state": "visible",
+        "timeoutMs": 10000
+      }
+    },
+    {
+      "id": "mf-08-extract",
+      "type": "extract",
+      "enabled": true,
+      "label": "結果テキストを取得",
+      "target": {
+        "layer": "web",
+        "candidates": [
+          {
+            "kind": "testid",
+            "value": "out"
+          }
+        ]
+      },
+      "params": {
+        "attribute": "innerText",
+        "into": "webResult"
+      }
+    },
+    {
+      "id": "mf-09-setvar",
+      "type": "set_var",
+      "enabled": true,
+      "label": "結果を整形",
+      "params": {
+        "name": "greeting",
+        "value": "結果=${var.webResult}"
+      }
+    },
+    {
+      "id": "mf-10-wait-time",
+      "type": "wait",
+      "enabled": true,
+      "label": "小休止",
+      "params": {
+        "ms": 200
+      }
+    },
+    {
+      "id": "mf-11-wait-expr",
+      "type": "wait_for",
+      "enabled": true,
+      "label": "式が真になるまで待機",
+      "params": {
+        "kind": "expr",
+        "expr": "var.webResult",
+        "timeoutMs": 3000
+      }
+    },
+    {
+      "id": "mf-12-if",
+      "type": "if",
+      "enabled": true,
+      "label": "Web結果の有無で分岐",
+      "params": {
+        "condition": "${var.webResult}"
+      },
+      "branches": [
+        {
+          "name": "then",
+          "steps": [
+            {
+              "id": "mf-12a-log",
+              "type": "log",
+              "enabled": true,
+              "params": {
+                "message": "Web結果あり: ${var.webResult}"
+              }
+            }
+          ]
+        }
+      ],
+      "children": [
+        {
+          "id": "mf-12b-log",
+          "type": "log",
+          "enabled": true,
+          "params": {
+            "message": "Web結果なし"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mf-13-loop",
+      "type": "loop",
+      "enabled": true,
+      "label": "2回ループ",
+      "params": {
+        "kind": "for",
+        "count": 2
+      },
+      "children": [
+        {
+          "id": "mf-13a-log",
+          "type": "log",
+          "enabled": true,
+          "params": {
+            "message": "ループ反復: ${var.greeting}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "mf-14-try",
+      "type": "try",
+      "enabled": true,
+      "label": "try / catch / finally",
+      "children": [
+        {
+          "id": "mf-14a-log",
+          "type": "log",
+          "enabled": true,
+          "params": {
+            "message": "try ボディ実行"
+          }
+        }
+      ],
+      "branches": [
+        {
+          "name": "catch",
+          "steps": [
+            {
+              "id": "mf-14b-log",
+              "type": "log",
+              "enabled": true,
+              "params": {
+                "message": "catch: ${var.__error__}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "finally",
+          "steps": [
+            {
+              "id": "mf-14c-log",
+              "type": "log",
+              "enabled": true,
+              "params": {
+                "message": "finally 実行"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mf-15-clip-write",
+      "type": "clipboard_write",
+      "enabled": true,
+      "label": "クリップボードへコピー",
+      "params": {
+        "value": "${var.greeting}",
+        "settleMs": 50
+      }
+    },
+    {
+      "id": "mf-16-clip-read",
+      "type": "clipboard_read",
+      "enabled": true,
+      "label": "クリップボードから取得",
+      "params": {
+        "into": "clip",
+        "settleMs": 50
+      }
+    },
+    {
+      "id": "mf-17-screen-click",
+      "type": "click",
+      "enabled": true,
+      "label": "画面上の画像をクリック",
+      "target": {
+        "layer": "screen",
+        "candidates": [
+          {
+            "kind": "image",
+            "assetRef": "assets/target.png",
+            "threshold": 0.8
+          }
+        ]
+      }
+    },
+    {
+      "id": "mf-18-screen-ocr",
+      "type": "extract",
+      "enabled": true,
+      "label": "画面領域をOCR読取",
+      "target": {
+        "layer": "screen",
+        "region": {
+          "x": 0,
+          "y": 0,
+          "w": 400,
+          "h": 200
+        },
+        "candidates": [
+          {
+            "kind": "ocr",
+            "text": "合計",
+            "lang": "ja"
+          }
+        ]
+      },
+      "params": {
+        "into": "screenText"
+      }
+    },
+    {
+      "id": "mf-19-desktop-click",
+      "type": "click",
+      "enabled": true,
+      "label": "デスクトップ クリック",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      }
+    },
+    {
+      "id": "mf-20-desktop-dblclick",
+      "type": "click",
+      "enabled": true,
+      "label": "デスクトップ ダブルクリック",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "clickCount": 2
+      }
+    },
+    {
+      "id": "mf-21-desktop-rightclick",
+      "type": "click",
+      "enabled": true,
+      "label": "デスクトップ 右クリック",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "button": "right"
+      }
+    },
+    {
+      "id": "mf-22-desktop-type",
+      "type": "type",
+      "enabled": true,
+      "label": "デスクトップ 文字入力",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "text": "${var.clip}"
+      }
+    },
+    {
+      "id": "mf-23-desktop-key",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "保存ショートカット",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "keys": [
+          "primary",
+          "s"
+        ]
+      }
+    },
+    {
+      "id": "mf-24-desktop-scroll",
+      "type": "scroll",
+      "enabled": true,
+      "label": "スクロール",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "dx": 0,
+        "dy": 200
+      }
+    },
+    {
+      "id": "mf-25-desktop-drag",
+      "type": "drag",
+      "enabled": true,
+      "label": "ドラッグ",
+      "target": {
+        "layer": "desktop",
+        "candidates": [
+          {
+            "kind": "coords",
+            "x": 400,
+            "y": 300,
+            "anchor": "screen"
+          }
+        ]
+      },
+      "params": {
+        "to": {
+          "x": 600,
+          "y": 500
+        }
+      }
+    },
+    {
+      "id": "mf-26-excel-open",
+      "type": "excel_open",
+      "enabled": true,
+      "label": "ワークブックを開く/新規作成",
+      "params": {
+        "path": "megaflow-out.xlsx"
+      }
+    },
+    {
+      "id": "mf-27-excel-write-a1",
+      "type": "excel_write",
+      "enabled": true,
+      "label": "A1に見出し",
+      "params": {
+        "path": "megaflow-out.xlsx",
+        "cell": "A1",
+        "value": "name"
+      }
+    },
+    {
+      "id": "mf-28-excel-write-b1",
+      "type": "excel_write",
+      "enabled": true,
+      "label": "B1にWeb結果",
+      "params": {
+        "path": "megaflow-out.xlsx",
+        "cell": "B1",
+        "value": "${var.webResult}"
+      }
+    },
+    {
+      "id": "mf-29-excel-read",
+      "type": "excel_read",
+      "enabled": true,
+      "label": "A1を読取",
+      "params": {
+        "path": "megaflow-out.xlsx",
+        "cell": "A1",
+        "into": "excelA1"
+      }
+    },
+    {
+      "id": "mf-30-excel-range",
+      "type": "excel_range",
+      "enabled": true,
+      "label": "2行目に範囲書込",
+      "params": {
+        "path": "megaflow-out.xlsx",
+        "range": "A2:B2",
+        "values": [
+          [
+            "plan",
+            "${var.greeting}"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "mf-31-log-end",
+      "type": "log",
+      "enabled": true,
+      "label": "完了ログ",
+      "params": {
+        "message": "メガフロー完了: web=${var.webResult} excelA1=${var.excelA1} screen=${var.screenText} clip=${var.clip}"
+      }
+    }
+  ]
+}

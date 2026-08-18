@@ -8,15 +8,16 @@
   },
   "packageManager": "pnpm@11.3.0",
   "scripts": {
-    "dev": "pnpm -F @hermes/app dev",
-    "build:mac": "pnpm -F @hermes/app build:mac",
+    "dev": "pnpm sidecar:mac:build:debug && pnpm -F @hermes/app dev",
+    "build:mac": "pnpm sidecar:mac:build && pnpm -F @hermes/app build:mac",
     "lint": "pnpm -r --parallel run lint",
     "typecheck": "pnpm -r --parallel run typecheck",
     "test": "pnpm -r --parallel run test",
     "test:run": "pnpm -r --parallel run test:run",
     "clean": "pnpm -r --parallel run clean",
     "format": "prettier --write .",
-    "sidecar:mac:build": "swift build --package-path sidecars/macos-native -c release"
+    "sidecar:mac:build": "swift build --package-path sidecars/macos-native -c release",
+    "sidecar:mac:build:debug": "swift build --package-path sidecars/macos-native"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

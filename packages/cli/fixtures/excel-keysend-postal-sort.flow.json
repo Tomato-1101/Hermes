@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "1.0",
+  "id": "excel-keysend-postal-sort",
+  "name": "Excel キー送出レシピ: 郵便番号の昇順並べ替え",
+  "createdAt": "2026-05-31T00:00:00.000Z",
+  "updatedAt": "2026-05-31T00:00:00.000Z",
+  "inputs": [],
+  "outputs": [],
+  "variables": [],
+  "defaults": {
+    "timeoutMs": 10000,
+    "retry": { "attempts": 1 },
+    "screenshotOnError": false,
+    "waitBetweenStepsMs": 150
+  },
+  "metadata": {
+    "origin": "recorded",
+    "targets": ["desktop"],
+    "requiredPermissions": ["accessibility", "input-monitoring"]
+  },
+  "steps": [
+    {
+      "id": "postal-00-pause",
+      "type": "manual_pause",
+      "enabled": true,
+      "label": "対象の .xlsx を Excel で開き、並べ替えたいシートをアクティブにしてから再開",
+      "params": {
+        "message": "Excel を起動し、郵便番号表のシートをアクティブにしてください。準備ができたら再開します。"
+      }
+    },
+    {
+      "id": "postal-01-home",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "先頭セル A1 へ移動 (Ctrl+Home)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "home"] }
+    },
+    {
+      "id": "postal-02-select-right",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "右端まで範囲選択 (Ctrl+Shift+→)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "shift", "right"] }
+    },
+    {
+      "id": "postal-03-select-down",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "下端まで範囲選択 (Ctrl+Shift+↓)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "shift", "down"] }
+    },
+    {
+      "id": "postal-04-filter",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "オートフィルタを ON (Ctrl+Shift+L)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "shift", "l"] }
+    },
+    {
+      "id": "postal-05-home-again",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "並べ替えキー列の見出しセルへ戻る (Ctrl+Home)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "home"] }
+    },
+    {
+      "id": "postal-06-open-dropdown",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "フィルタのドロップダウンを開く (Alt+↓)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["alt", "down"] }
+    },
+    {
+      "id": "postal-07-sort-ascending",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "昇順で並べ替え (S)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["s"] }
+    },
+    {
+      "id": "postal-08-save",
+      "type": "key_combo",
+      "enabled": true,
+      "label": "上書き保存 (Ctrl+S)",
+      "target": { "layer": "desktop", "candidates": [{ "kind": "coords", "x": 0, "y": 0, "anchor": "screen" }] },
+      "params": { "keys": ["ctrl", "s"] }
+    },
+    {
+      "id": "postal-09-log",
+      "type": "log",
+      "enabled": true,
+      "label": "完了ログ",
+      "params": { "level": "info", "message": "Excel キー送出レシピ(郵便番号昇順)を送出しました。" }
+    }
+  ]
+}

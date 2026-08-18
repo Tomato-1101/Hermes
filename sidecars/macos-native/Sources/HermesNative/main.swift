@@ -163,6 +163,85 @@ let handlers: [String: Handler] = [
         return mainScreenSize()
     },
 
+    "screen.capture": { params in
+        let region = regionFromParams(paramsObject(params))
+        do {
+            return try captureScreen(region: region)
+        } catch ScreenError.captureFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32012,
+                message: "Screen capture failed (Screen Recording permission may be missing)"
+            )
+        } catch {
+            throw RpcDispatchError.applicationError(
+                code: -32603,
+                message: "screen.capture failed: \(error)"
+            )
+        }
+    },
+
+    "screen.findImage": { params in
+        guard let p = paramsObject(params),
+              let tmplB64 = (p["template"]).flatMap({ stringValue($0) }),
+              let tmplData = Data(base64Encoded: tmplB64) else {
+            throw RpcDispatchError.applicationError(
+                code: -32602,
+                message: "screen.findImage requires params.template (base64 PNG)"
+            )
+        }
+        let threshold = (p["threshold"]).flatMap { doubleValue($0) } ?? 0.8
+        let scaleInvariant = (p["scaleInvariant"]).flatMap { boolValue($0) } ?? false
+        let region = regionFromParams(p)
+        do {
+            return try findImageOnScreen(
+                templatePNG: tmplData,
+                threshold: threshold,
+                scaleInvariant: scaleInvariant,
+                region: region
+            )
+        } catch ScreenError.captureFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32012,
+                message: "Screen capture failed (Screen Recording permission may be missing)"
+            )
+        } catch ScreenError.decodeFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32602,
+                message: "screen.findImage: could not decode the template image"
+            )
+        } catch {
+            throw RpcDispatchError.applicationError(
+                code: -32603,
+                message: "screen.findImage failed: \(error)"
+            )
+        }
+    },
+
+    "screen.ocr": { params in
+        let p = paramsObject(params)
+        let region = regionFromParams(p)
+        // Accept either `languages: [..]` or a single `lang: ".."`.
+        var languages: [String] = []
+        if let arr = p?["languages"], case let .array(items) = arr {
+            languages = items.compactMap { stringValue($0) }
+        } else if let one = (p?["lang"]).flatMap({ stringValue($0) }) {
+            languages = [one]
+        }
+        do {
+            return try ocrScreen(region: region, languages: languages)
+        } catch ScreenError.captureFailed {
+            throw RpcDispatchError.applicationError(
+                code: -32012,
+                message: "Screen capture failed (Screen Recording permission may be missing)"
+            )
+        } catch {
+            throw RpcDispatchError.applicationError(
+                code: -32603,
+                message: "screen.ocr failed: \(error)"
+            )
+        }
+    },
+
     "mouse.click": { params in
         let (x, y) = try requireXY(params)
         let p = paramsObject(params)
@@ -183,6 +262,63 @@ let handlers: [String: Handler] = [
             return .object(["ok": .bool(true)])
         } catch {
             throw RpcDispatchError.applicationError(code: -32603, message: "move failed: \(error)")
+        }
+    },
+
+    "mouse.position": { _ in
+        let p = currentMousePosition()
+        return .object([
+            "x": .double(Double(p.x)),
+            "y": .double(Double(p.y)),
+        ])
+    },
+
+    "mouse.move_smooth": { params in
+        let p = paramsObject(params)
+        guard let toX = (p?["toX"]).flatMap({ doubleValue($0) }),
+              let toY = (p?["toY"]).flatMap({ doubleValue($0) }) else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing toX/toY")
+        }
+        let durationMs = (p?["durationMs"]).flatMap { intValue($0) } ?? 200
+        let steps = (p?["steps"]).flatMap { intValue($0) } ?? 16
+        do {
+            // postMouseMoveSmooth returns a measurement dict (actualFps,
+            // maxSlipMs, steps, durationMs) so the TS adapter can detect
+            // when timing is slipping (system under load, QoS demotion).
+            return try postMouseMoveSmooth(toX: toX, toY: toY, durationMs: durationMs, steps: steps)
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "move_smooth failed: \(error)")
+        }
+    },
+
+    "mouse.scroll": { params in
+        let (x, y) = try requireXY(params)
+        let p = paramsObject(params)
+        let dx = (p?["dx"]).flatMap { doubleValue($0) } ?? 0
+        let dy = (p?["dy"]).flatMap { doubleValue($0) } ?? 0
+        do {
+            try postScroll(x: x, y: y, dx: dx, dy: dy)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "scroll failed: \(error)")
+        }
+    },
+
+    "mouse.drag": { params in
+        let p = paramsObject(params)
+        guard let fromX = (p?["fromX"]).flatMap({ doubleValue($0) }),
+              let fromY = (p?["fromY"]).flatMap({ doubleValue($0) }),
+              let toX = (p?["toX"]).flatMap({ doubleValue($0) }),
+              let toY = (p?["toY"]).flatMap({ doubleValue($0) }) else {
+            throw RpcDispatchError.applicationError(code: -32602, message: "missing fromX/fromY/toX/toY")
+        }
+        let durationMs = (p?["durationMs"]).flatMap { intValue($0) } ?? 300
+        let steps = (p?["steps"]).flatMap { intValue($0) } ?? 24
+        do {
+            try postDrag(fromX: fromX, fromY: fromY, toX: toX, toY: toY, durationMs: durationMs, steps: steps)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "drag failed: \(error)")
         }
     },
 
@@ -211,6 +347,21 @@ let handlers: [String: Handler] = [
             return .object(["ok": .bool(true)])
         } catch {
             throw RpcDispatchError.applicationError(code: -32603, message: "combo failed: \(error)")
+        }
+    },
+
+    "clipboard.read": { _ in
+        return .object(["text": .string(clipboardReadText())])
+    },
+
+    "clipboard.write": { params in
+        let p = paramsObject(params)
+        let text = (p?["text"]).flatMap { stringValue($0) } ?? ""
+        do {
+            try clipboardWriteText(text)
+            return .object(["ok": .bool(true)])
+        } catch {
+            throw RpcDispatchError.applicationError(code: -32603, message: "clipboard.write failed: \(error)")
         }
     },
 
@@ -296,6 +447,24 @@ private func requireXY(_ params: JSONValue?) throws -> (Double, Double) {
         throw RpcDispatchError.applicationError(code: -32602, message: "missing x/y")
     }
     return (x, y)
+}
+
+private func boolValue(_ v: JSONValue) -> Bool? {
+    if case let .bool(b) = v { return b }
+    return nil
+}
+
+/// Parse an optional `region: { x, y, w, h }` (logical screen points) from a
+/// params object into a CGRect; nil when absent or malformed.
+private func regionFromParams(_ p: [String: JSONValue]?) -> CGRect? {
+    guard let r = p?["region"], case let .object(rdict) = r,
+          let x = (rdict["x"]).flatMap({ doubleValue($0) }),
+          let y = (rdict["y"]).flatMap({ doubleValue($0) }),
+          let w = (rdict["w"]).flatMap({ doubleValue($0) }),
+          let h = (rdict["h"]).flatMap({ doubleValue($0) }) else {
+        return nil
+    }
+    return CGRect(x: x, y: y, width: w, height: h)
 }
 
 // MARK: - Framing helpers

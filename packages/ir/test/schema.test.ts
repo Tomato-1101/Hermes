@@ -69,6 +69,21 @@ describe('validateFlow', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a Flow whose defaults include humanize overrides', () => {
+    const flow = makeFlow({
+      defaults: {
+        timeoutMs: 30000,
+        retry: { attempts: 1 },
+        screenshotOnError: true,
+        waitBetweenStepsMs: 50,
+        humanize: { mouseSpeedPxPerSec: 600, typeDelayMs: 30 },
+      },
+    });
+    const result = validateFlow(flow);
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
   it('rejects unknown step type', () => {
     const flow = makeFlow({
       steps: [{ id: newId(), type: 'launch_rocket' as unknown as 'click', enabled: true }],

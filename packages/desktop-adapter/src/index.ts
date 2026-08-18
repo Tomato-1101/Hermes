@@ -8,6 +8,10 @@
 
 import type { AppRef, Rect } from '@hermes/ir';
 
+// The zod-validated sidecar JSON-RPC contract (method names, params, results,
+// coordinate + key-name conventions) and its opt-in validating client wrapper.
+export * from './rpc-contract.js';
+
 export type Modifier = 'shift' | 'alt' | 'ctrl' | 'cmd' | 'primary';
 
 export type MouseButton = 'left' | 'right' | 'middle';
@@ -21,6 +25,24 @@ export interface ClickOpts {
   button?: MouseButton;
   clicks?: 1 | 2 | 3;
   modifiers?: Modifier[];
+  /** Pixels per second for the human-like move that precedes the click. */
+  speedPxPerSec?: number;
+  /** Floor / ceiling for the number of intermediate move events. */
+  minSteps?: number;
+  maxSteps?: number;
+  /** Skip the move-then-click humanization and post the click directly. */
+  instant?: boolean;
+  /**
+   * Force the pre-click move to take exactly this many milliseconds,
+   * regardless of the distance/speed computation. Used by the flow
+   * preprocessor that overlaps long moves with a preceding `wait` step,
+   * so the click fires at the recorded rhythm instead of "wait, then
+   * fly, then click" with extra latency tacked on.
+   *
+   * When set, `speedPxPerSec` is ignored for duration but still bounds
+   * the step count via the frame-interval target.
+   */
+  durationMsOverride?: number;
 }
 
 export interface TypeOpts {
@@ -98,6 +120,43 @@ export interface ScreenshotOpts {
   highDpi?: boolean;
 }
 
+export interface FindImageOpts {
+  /** NCC match score in [0,1] the result must reach to count as found. */
+  threshold?: number;
+  /** Try a small scale pyramid so a resized target still matches. */
+  scaleInvariant?: boolean;
+  /** Restrict the search to this screen-point rect. */
+  region?: Rect;
+}
+
+/** Result of a screen template match — coordinates in logical screen points. */
+export interface ImageMatch {
+  found: boolean;
+  score: number;
+  /** Center of the match — the natural click point. */
+  center?: Point;
+  bbox?: Rect;
+}
+
+export interface OcrOpts {
+  region?: Rect;
+  /** Vision recognition languages, e.g. ['ja-JP','en-US']. */
+  languages?: string[];
+}
+
+export interface OcrObservation {
+  text: string;
+  confidence: number;
+  /** Bounding box in logical screen points (origin top-left). */
+  bbox: Rect;
+}
+
+export interface OcrResult {
+  /** All recognized lines joined with '\n'. */
+  text: string;
+  observations: OcrObservation[];
+}
+
 /**
  * Engine-facing contract. All methods are async; OS sidecars implement them
  * over JSON-RPC. Errors should carry a `class` string so retry policies can
@@ -111,7 +170,7 @@ export interface DesktopAdapter {
   click(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   doubleClick(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   rightClick(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
-  hover(target: ElementHandle | Point): Promise<void>;
+  hover(target: ElementHandle | Point, opts?: ClickOpts): Promise<void>;
   type(text: string, opts?: TypeOpts): Promise<void>;
   keyCombo(keys: ReadonlyArray<string>): Promise<void>;
   scroll(target: ElementHandle | Point, dx: number, dy: number): Promise<void>;
@@ -119,10 +178,20 @@ export interface DesktopAdapter {
 
   // --- observation ---
   screenshot(opts?: ScreenshotOpts): Promise<Buffer>;
+  /** Screen layer: locate a reference image; coords are logical points. */
+  findImageOnScreen(template: Buffer, opts?: FindImageOpts): Promise<ImageMatch>;
+  /** Screen layer: OCR the screen (or a region) via the OS text recognizer. */
+  readScreenText(opts?: OcrOpts): Promise<OcrResult>;
   waitForState(
     predicate: () => boolean | Promise<boolean>,
     opts?: WaitOpts,
   ): Promise<void>;
+
+  // --- clipboard ---
+  /** Read the OS clipboard as plain text ("" when it holds no text). */
+  readClipboard(): Promise<string>;
+  /** Replace the OS clipboard contents with `text`. */
+  writeClipboard(text: string): Promise<void>;
 
   // --- apps / windows ---
   listApps(): Promise<AppInfo[]>;

@@ -7,12 +7,14 @@
  * SidecarClient. The adapter is intentionally side-effect free at
  * construction so tests can substitute a fake client.
  *
- * Scope (Phase 1b):
+ * Scope (Phase 1):
  *   - Implemented: coords click/doubleClick/rightClick/hover, type,
- *     keyCombo, listApps, getFocusedApp, ensurePermissions, dispose.
- *   - Stubbed: AX selector lookup, focusApp, scroll, drag, screenshot.
- *     These need additional sidecar RPCs (AX tree walk, NSWorkspace
- *     activate, ScreenCaptureKit) that land in a later sub-phase.
+ *     keyCombo, scroll, drag, screenshot, listApps, getFocusedApp,
+ *     ensurePermissions, dispose, and the screen layer
+ *     (findImageOnScreen / readScreenText via screen.findImage / screen.ocr).
+ *   - Stubbed: AX selector lookup (findElement only resolves `coords`),
+ *     focusApp. These need AX-tree-walk / NSWorkspace.activate RPCs that
+ *     land in a later sub-phase.
  */
 import type { AppRef } from '@hermes/ir';
 import type {
@@ -21,7 +23,11 @@ import type {
   DesktopAdapter,
   DesktopSelector,
   ElementHandle,
+  FindImageOpts,
   FindOpts,
+  ImageMatch,
+  OcrOpts,
+  OcrResult,
   PermissionStatus,
   Point,
   ScreenshotOpts,
@@ -32,6 +38,21 @@ import { DesktopAdapterError } from './index.js';
 import { SidecarClient } from './sidecar-client.js';
 
 type SidecarLike = Pick<SidecarClient, 'call' | 'dispose'>;
+
+const DEFAULT_MOUSE_SPEED_PX_PER_SEC = 800;
+// Step bounds tuned for "smoother than display refresh" without burning
+// the per-iteration Swift loop budget. At 6ms-per-frame the Swift side
+// has ~3-4ms to spare per step for CGEvent + WindowServer post + the
+// mach_wait_until wake. Going to 4ms (250fps) actually showed *worse*
+// motion because the loop itself slipped under the deadline — see the
+// algorithm rewrite in Input.swift:postMouseMoveSmooth.
+const DEFAULT_MOUSE_MIN_STEPS = 16;
+const DEFAULT_MOUSE_MAX_STEPS = 1200;
+// 6ms per frame (~166 fps target). That's a 1.4× over-sample of a
+// 120Hz ProMotion display, which is the visual ceiling — beyond this
+// extra samples are not visible to the user, only cost CPU.
+const DEFAULT_MOUSE_FRAME_INTERVAL_S = 0.006;
+const DEFAULT_TYPE_DELAY_MS = 50;
 
 function isPoint(t: ElementHandle | Point): t is Point {
   return typeof (t as Point).x === 'number' && typeof (t as Point).y === 'number'
@@ -84,6 +105,9 @@ export class MacosDesktopAdapter implements DesktopAdapter {
 
   async click(target: ElementHandle | Point, opts: ClickOpts = {}): Promise<void> {
     const { x, y } = targetPoint(target);
+    if (!opts.instant) {
+      await this.moveSmoothlyTo(x, y, opts);
+    }
     await this.client.call('mouse.click', {
       x,
       y,
@@ -100,9 +124,13 @@ export class MacosDesktopAdapter implements DesktopAdapter {
     await this.click(target, { ...opts, button: 'right' });
   }
 
-  async hover(target: ElementHandle | Point): Promise<void> {
+  async hover(target: ElementHandle | Point, opts: ClickOpts = {}): Promise<void> {
     const { x, y } = targetPoint(target);
-    await this.client.call('mouse.move', { x, y });
+    if (opts.instant) {
+      await this.client.call('mouse.move', { x, y });
+      return;
+    }
+    await this.moveSmoothlyTo(x, y, opts);
   }
 
   async type(text: string, opts: TypeOpts = {}): Promise<void> {
@@ -112,35 +140,191 @@ export class MacosDesktopAdapter implements DesktopAdapter {
     }
     await this.client.call('keyboard.type', {
       text,
-      intervalMs: opts.intervalMs ?? 0,
+      intervalMs: opts.intervalMs ?? DEFAULT_TYPE_DELAY_MS,
     });
+  }
+
+  /**
+   * Read the current cursor position from the sidecar, work out a step count
+   * and duration that matches the requested px-per-second, and ask the
+   * sidecar to interpolate the move in-process. Falling back to a single
+   * `mouse.move` when the start position isn't available keeps us from
+   * stalling if the new RPC isn't deployed yet.
+   */
+  private async moveSmoothlyTo(
+    x: number,
+    y: number,
+    opts: ClickOpts,
+  ): Promise<void> {
+    const speed = opts.speedPxPerSec ?? DEFAULT_MOUSE_SPEED_PX_PER_SEC;
+    const minSteps = opts.minSteps ?? DEFAULT_MOUSE_MIN_STEPS;
+    const maxSteps = opts.maxSteps ?? DEFAULT_MOUSE_MAX_STEPS;
+    let from: { x: number; y: number } | null = null;
+    try {
+      const pos = (await this.client.call('mouse.position')) as {
+        x?: number;
+        y?: number;
+      } | null;
+      if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+        from = { x: pos.x, y: pos.y };
+      }
+    } catch {
+      from = null;
+    }
+    if (!from) {
+      await this.client.call('mouse.move', { x, y });
+      return;
+    }
+    const dx = x - from.x;
+    const dy = y - from.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < 1) return;
+    const safeSpeed = Math.max(50, speed);
+    // durationMsOverride wins over the distance/speed computation. The
+    // flow preprocessor uses this to fold the move into a preceding
+    // wait, so the click lands at the recorded time. When the override
+    // forces a faster effective speed than the user's setting, the step
+    // count still targets DEFAULT_MOUSE_FRAME_INTERVAL_S frames so the
+    // motion stays smooth — we don't drop frames just because we're
+    // moving faster.
+    const naturalDurationMs = Math.max(16, Math.round((distance / safeSpeed) * 1000));
+    const durationMs =
+      opts.durationMsOverride !== undefined
+        ? Math.max(16, Math.round(opts.durationMsOverride))
+        : naturalDurationMs;
+    // Aim for one waypoint every DEFAULT_MOUSE_FRAME_INTERVAL_S seconds.
+    // Step count tracks the EFFECTIVE speed (distance / durationMs), not
+    // the configured speed, so a duration-overridden faster move still
+    // gets enough samples to look smooth.
+    const effectiveSpeed = distance / (durationMs / 1000);
+    const rawSteps = Math.ceil(distance / Math.max(1, effectiveSpeed * DEFAULT_MOUSE_FRAME_INTERVAL_S));
+    const steps = Math.min(maxSteps, Math.max(minSteps, rawSteps));
+    // The default sidecar timeout is 5s — way too short for a long
+    // ease-in-out move at the user's chosen speed. Give the call the
+    // full duration plus a healthy buffer for JSON-RPC round-trip and
+    // CGEvent processing latency.
+    const timeoutMs = durationMs + 4000;
+    const result = (await this.client.call(
+      'mouse.move_smooth',
+      { toX: x, toY: y, durationMs, steps },
+      timeoutMs,
+    )) as
+      | { actualFps?: number; maxSlipMs?: number; steps?: number; durationMs?: number }
+      | null;
+    // Surface measured fps when it falls below the 70% threshold of
+    // the requested cadence. This is the only way to spot scheduler
+    // contention / QoS demotion from outside the Swift process — without
+    // it the user sees "stutter" but no log entry. We deliberately log
+    // to stdout (visible in the Electron main process console) rather
+    // than throwing, because slipping is a quality issue, not a failure.
+    if (
+      result &&
+      typeof result.actualFps === 'number' &&
+      typeof result.maxSlipMs === 'number'
+    ) {
+      const targetFps = 1 / DEFAULT_MOUSE_FRAME_INTERVAL_S;
+      if (result.actualFps < targetFps * 0.7 || result.maxSlipMs > 4) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[hermes:mouse] move_smooth slipping: actualFps=${result.actualFps.toFixed(0)} ` +
+            `target=${targetFps.toFixed(0)} maxSlip=${result.maxSlipMs.toFixed(1)}ms ` +
+            `steps=${result.steps ?? steps} dur=${result.durationMs?.toFixed(0) ?? durationMs}/${durationMs}ms`,
+        );
+      }
+    }
   }
 
   async keyCombo(keys: ReadonlyArray<string>): Promise<void> {
     await this.client.call('keyboard.combo', { keys: Array.from(keys) });
   }
 
-  async scroll(_target: ElementHandle | Point, _dx: number, _dy: number): Promise<void> {
-    throw new DesktopAdapterError(
-      'MacosDesktopAdapter.scroll: not yet implemented (needs sidecar scroll RPC)',
-      'unknown',
-    );
+  async scroll(target: ElementHandle | Point, dx: number, dy: number): Promise<void> {
+    const { x, y } = targetPoint(target);
+    await this.client.call('mouse.scroll', { x, y, dx, dy });
   }
 
-  async drag(_from: ElementHandle | Point, _to: ElementHandle | Point): Promise<void> {
-    throw new DesktopAdapterError(
-      'MacosDesktopAdapter.drag: not yet implemented (needs sidecar drag RPC)',
-      'unknown',
-    );
+  async drag(from: ElementHandle | Point, to: ElementHandle | Point): Promise<void> {
+    const a = targetPoint(from);
+    const b = targetPoint(to);
+    await this.client.call('mouse.drag', { fromX: a.x, fromY: a.y, toX: b.x, toY: b.y });
   }
 
   // --- observation -------------------------------------------------------
 
-  async screenshot(_opts?: ScreenshotOpts): Promise<Buffer> {
-    throw new DesktopAdapterError(
-      'MacosDesktopAdapter.screenshot: not yet implemented (needs ScreenCaptureKit RPC)',
-      'unknown',
-    );
+  async screenshot(opts?: ScreenshotOpts): Promise<Buffer> {
+    const params: Record<string, unknown> = {};
+    if (opts?.region) {
+      params['region'] = {
+        x: opts.region.x,
+        y: opts.region.y,
+        w: opts.region.w,
+        h: opts.region.h,
+      };
+    }
+    const res = (await this.client.call('screen.capture', params)) as {
+      data?: string;
+      format?: string;
+    } | null;
+    if (!res || typeof res.data !== 'string') {
+      throw new DesktopAdapterError('screen.capture returned no data', 'unknown');
+    }
+    return Buffer.from(res.data, 'base64');
+  }
+
+  async findImageOnScreen(template: Buffer, opts: FindImageOpts = {}): Promise<ImageMatch> {
+    const params: Record<string, unknown> = { template: template.toString('base64') };
+    if (opts.threshold !== undefined) params['threshold'] = opts.threshold;
+    if (opts.scaleInvariant) params['scaleInvariant'] = true;
+    if (opts.region) params['region'] = opts.region;
+    const res = (await this.client.call('screen.findImage', params)) as {
+      found?: boolean;
+      score?: number;
+      x?: number;
+      y?: number;
+      w?: number;
+      h?: number;
+      cx?: number;
+      cy?: number;
+    } | null;
+    if (!res || !res.found) return { found: false, score: res?.score ?? 0 };
+    const match: ImageMatch = { found: true, score: res.score ?? 0 };
+    if (typeof res.cx === 'number' && typeof res.cy === 'number') {
+      match.center = { x: res.cx, y: res.cy };
+    }
+    if (
+      typeof res.x === 'number' &&
+      typeof res.y === 'number' &&
+      typeof res.w === 'number' &&
+      typeof res.h === 'number'
+    ) {
+      match.bbox = { x: res.x, y: res.y, w: res.w, h: res.h };
+    }
+    return match;
+  }
+
+  async readScreenText(opts: OcrOpts = {}): Promise<OcrResult> {
+    const params: Record<string, unknown> = {};
+    if (opts.region) params['region'] = opts.region;
+    if (opts.languages && opts.languages.length) params['languages'] = opts.languages;
+    const res = (await this.client.call('screen.ocr', params)) as {
+      text?: string;
+      observations?: {
+        text: string;
+        confidence: number;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+      }[];
+    } | null;
+    return {
+      text: res?.text ?? '',
+      observations: (res?.observations ?? []).map((o) => ({
+        text: o.text,
+        confidence: o.confidence,
+        bbox: { x: o.x, y: o.y, w: o.w, h: o.h },
+      })),
+    };
   }
 
   async waitForState(
@@ -157,6 +341,17 @@ export class MacosDesktopAdapter implements DesktopAdapter {
       await new Promise((r) => setTimeout(r, interval));
     }
     throw new DesktopAdapterError('waitForState: predicate did not become true within timeout', 'timeout');
+  }
+
+  // --- clipboard ---------------------------------------------------------
+
+  async readClipboard(): Promise<string> {
+    const res = (await this.client.call('clipboard.read')) as { text?: string } | null;
+    return res?.text ?? '';
+  }
+
+  async writeClipboard(text: string): Promise<void> {
+    await this.client.call('clipboard.write', { text });
   }
 
   // --- apps / windows ----------------------------------------------------
@@ -184,13 +379,15 @@ export class MacosDesktopAdapter implements DesktopAdapter {
       | Record<string, unknown>
       | null;
     if (!result || typeof result !== 'object') return null;
-    return {
+    const info: AppInfo = {
       bundleId: (result.bundleId as string) || undefined,
       processName: (result.name as string) ?? '',
       pid: Number(result.pid ?? 0),
-      title: undefined,
       active: true,
     };
+    const title = result['windowTitle'];
+    if (typeof title === 'string' && title) info.title = title;
+    return info;
   }
 
   // --- permissions / lifecycle -------------------------------------------

@@ -1,0 +1,28 @@
+{
+  "name": "@hermes/excel-provider",
+  "version": "0.0.1",
+  "private": true,
+  "description": "exceljs-backed Excel Provider: file-based .xlsx read/write/range Steps (OS-independent, no Excel app).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./handlers": "./src/handlers.ts"
+  },
+  "scripts": {
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@hermes/engine": "workspace:*",
+    "@hermes/ir": "workspace:*",
+    "exceljs": "^4.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

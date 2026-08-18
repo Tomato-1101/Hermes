@@ -5,6 +5,7 @@ export {
   HermesAbortError,
   type AiServiceHandle,
   type DesktopProviderHandle,
+  type ExcelProviderHandle,
   type ProviderBag,
   type RunContext,
   type RunEvent,

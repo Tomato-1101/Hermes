@@ -52,6 +52,188 @@ func postMouseMove(x: Double, y: Double) throws {
     event.post(tap: .cghidEventTap)
 }
 
+/// Scroll the wheel by pixel deltas at (x, y). The cursor is moved there
+/// first so the scroll lands on the window under it. CGEvent wheel axes run
+/// opposite to screen-space motion: a positive wheel1 scrolls content up, so
+/// we negate the caller's dy (screen-space, y-down) to keep "dy > 0 scrolls
+/// down". wheel1 is vertical, wheel2 horizontal.
+func postScroll(x: Double, y: Double, dx: Double, dy: Double) throws {
+    let point = CGPoint(x: x, y: y)
+    if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) {
+        move.post(tap: .cghidEventTap)
+    }
+    guard let scroll = CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .pixel,
+        wheelCount: 2,
+        wheel1: Int32(-dy),
+        wheel2: Int32(-dx),
+        wheel3: 0
+    ) else {
+        throw InputError.eventCreationFailed
+    }
+    scroll.location = point
+    scroll.post(tap: .cghidEventTap)
+}
+
+/// Press at (fromX, fromY), drag through `steps` interpolated moves to
+/// (toX, toY) over roughly `durationMs`, then release. Linear interpolation
+/// is enough for RPA — only the press/drag/release sequence and the endpoints
+/// matter, not the exact path curvature.
+func postDrag(fromX: Double, fromY: Double, toX: Double, toY: Double, durationMs: Int, steps: Int) throws {
+    let from = CGPoint(x: fromX, y: fromY)
+    let to = CGPoint(x: toX, y: toY)
+    let n = max(1, steps)
+    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: from, mouseButton: .left) else {
+        throw InputError.eventCreationFailed
+    }
+    down.post(tap: .cghidEventTap)
+    let stepDelayUs = UInt32(max(0, durationMs) * 1000 / n)
+    for i in 1...n {
+        let t = Double(i) / Double(n)
+        let px = fromX + (toX - fromX) * t
+        let py = fromY + (toY - fromY) * t
+        guard let dragged = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: CGPoint(x: px, y: py), mouseButton: .left) else {
+            throw InputError.eventCreationFailed
+        }
+        dragged.post(tap: .cghidEventTap)
+        if stepDelayUs > 0 { usleep(stepDelayUs) }
+    }
+    guard let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left) else {
+        throw InputError.eventCreationFailed
+    }
+    up.post(tap: .cghidEventTap)
+}
+
+/// Return the current cursor location in Quartz coordinates (origin
+/// top-left, matching CGEvent's coordinate space). NSEvent.mouseLocation
+/// is Cocoa (origin bottom-left of the screen frame), so we flip Y against
+/// the bottom of the screen that contains the cursor.
+func currentMousePosition() -> CGPoint {
+    let cocoa = NSEvent.mouseLocation
+    let containing = NSScreen.screens.first(where: { NSPointInRect(cocoa, $0.frame) })
+        ?? NSScreen.main
+    guard let screen = containing else { return CGPoint(x: cocoa.x, y: cocoa.y) }
+    let frame = screen.frame
+    let quartzY = (frame.origin.y + frame.size.height) - cocoa.y
+    return CGPoint(x: cocoa.x, y: quartzY)
+}
+
+// Cached mach timebase: converts nanoseconds to host ticks for
+// mach_wait_until. mach_timebase_info on Apple silicon returns 125/3
+// (i.e. 1 tick ≈ 41.66ns), so we must convert — passing raw ns to
+// mach_wait_until would otherwise wake 24× too early.
+private var _mt_inited = false
+private var _mt = mach_timebase_info_data_t()
+
+private func nanosToHostTicks(_ ns: UInt64) -> UInt64 {
+    if !_mt_inited {
+        mach_timebase_info(&_mt)
+        _mt_inited = true
+    }
+    return ns * UInt64(_mt.denom) / UInt64(_mt.numer)
+}
+
+/// Linearly interpolate the cursor from its current position to (toX, toY)
+/// over `durationMs` milliseconds at **constant velocity**, posting one
+/// `.mouseMoved` event per step. Returns a small dict of measurements
+/// the TS side logs so the user can see actual vs requested fps.
+///
+/// Four optimisations matter here — without them a "250 fps" loop shows
+/// up on screen as 30 fps, which is what the user reported:
+///
+///   1. Reuse ONE CGEvent across the loop. Allocating a new one each
+///      step costs ~100-200µs; at 6ms-frame cadence that's a third of
+///      the budget.
+///
+///   2. Stamp .mouseEventDeltaX/Y on every post. Without explicit deltas,
+///      the WindowServer coalesces same-frame mouseMoved events into one
+///      visual update, so a 166 Hz stream collapses to the display
+///      refresh rate. Setting deltas tells it these are distinct motions.
+///
+///   3. Bump the thread to .userInteractive QoS for the move. The
+///      JSON-RPC main thread runs at .userInitiated by default, which
+///      lets mach_wait_until slip by 500µs-2ms under any system load.
+///
+///   4. Hybrid sleep: kernel wait gets us close, then busy-spin the
+///      final ~150µs. mach_wait_until's wake jitter dominates sub-ms
+///      deadlines; busy-spin is the only way to land on time.
+func postMouseMoveSmooth(toX: Double, toY: Double, durationMs: Int, steps: Int) throws -> JSONValue {
+    let safeSteps = max(1, steps)
+    let totalNs = UInt64(max(1, durationMs)) * 1_000_000
+    let from = currentMousePosition()
+    let dx = toX - Double(from.x)
+    let dy = toY - Double(from.y)
+
+    // (3) Raise QoS so the scheduler prioritises our wake-ups.
+    let prevQos = Thread.current.qualityOfService
+    Thread.current.qualityOfService = .userInteractive
+    defer { Thread.current.qualityOfService = prevQos }
+
+    // (1) Single CGEvent re-posted with mutated fields.
+    guard let event = CGEvent(
+        mouseEventSource: nil,
+        mouseType: .mouseMoved,
+        mouseCursorPosition: from,
+        mouseButton: .left
+    ) else {
+        throw InputError.eventCreationFailed
+    }
+
+    let startTicks = mach_absolute_time()
+    let spinThresholdTicks = nanosToHostTicks(150_000) // 150µs busy-spin floor
+    var prevX = Double(from.x)
+    var prevY = Double(from.y)
+    var maxSlipNs: Int64 = 0
+
+    for i in 1...safeSteps {
+        let t = Double(i) / Double(safeSteps)
+        let x = Double(from.x) + dx * t
+        let y = Double(from.y) + dy * t
+
+        // (1) Update location on the shared event instead of allocating.
+        event.location = CGPoint(x: x, y: y)
+        // (2) Explicit delta so WindowServer doesn't coalesce.
+        let ddx = Int64((x - prevX).rounded())
+        let ddy = Int64((y - prevY).rounded())
+        event.setIntegerValueField(.mouseEventDeltaX, value: ddx)
+        event.setIntegerValueField(.mouseEventDeltaY, value: ddy)
+        prevX = x; prevY = y
+
+        event.post(tap: .cghidEventTap)
+
+        if i < safeSteps {
+            let deadlineNs = UInt64(Double(totalNs) * t)
+            let deadlineTicks = startTicks + nanosToHostTicks(deadlineNs)
+            // (4) Hybrid sleep: kernel for the bulk, spin for the last ~150µs.
+            let now = mach_absolute_time()
+            if deadlineTicks > now + spinThresholdTicks {
+                mach_wait_until(deadlineTicks - spinThresholdTicks)
+            }
+            while mach_absolute_time() < deadlineTicks { /* busy-spin */ }
+            let slipTicks = Int64(mach_absolute_time()) - Int64(deadlineTicks)
+            if slipTicks > 0 {
+                let slipNs = slipTicks * Int64(_mt.numer) / Int64(_mt.denom)
+                if slipNs > maxSlipNs { maxSlipNs = slipNs }
+            }
+        }
+    }
+
+    let totalDurationTicks = mach_absolute_time() - startTicks
+    let totalDurationNs = totalDurationTicks * UInt64(_mt.numer) / UInt64(_mt.denom)
+    let actualFps =
+        totalDurationNs > 0
+            ? Double(safeSteps) * 1_000_000_000.0 / Double(totalDurationNs)
+            : 0.0
+    return .object([
+        "ok": .bool(true),
+        "actualFps": .double(actualFps),
+        "maxSlipMs": .double(Double(maxSlipNs) / 1_000_000.0),
+        "steps": .int(safeSteps),
+        "durationMs": .double(Double(totalDurationNs) / 1_000_000.0),
+    ])
+}
+
 func postType(_ text: String, intervalMs: Int = 0) throws {
     // CGEventKeyboardSetUnicodeString lets us send any UTF-16 string in
     // one event pair (down/up) per character. This bypasses keyboard

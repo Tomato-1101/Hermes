@@ -63,6 +63,9 @@ type Events = {
   step: RecorderEvent;
 };
 
+/** Minimum gap between two user events to materialise as a recorded `wait`. */
+const DEFAULT_MIN_RECORDED_WAIT_MS = 200;
+
 export class WebRecorder {
   private provider: WebProvider | null = null;
   private context: BrowserContext | null = null;
@@ -70,6 +73,11 @@ export class WebRecorder {
   private attached = false;
   private readonly emitter: Emitter<Events> = mitt<Events>();
   private lastUrl: string | null = null;
+  // Inter-event timing — captures the human's wait between actions so the
+  // recorded flow replays at the rhythm the user actually performed it.
+  private lastEmitTs = 0;
+  private recordWaits = true;
+  private minRecordedWaitMs = DEFAULT_MIN_RECORDED_WAIT_MS;
 
   async attach(provider: WebProvider): Promise<void> {
     if (this.attached) return;
@@ -107,10 +115,27 @@ export class WebRecorder {
 
   start(): void {
     this.running = true;
+    this.lastEmitTs = 0;
   }
 
   stop(): void {
     this.running = false;
+    this.lastEmitTs = 0;
+  }
+
+  /**
+   * Toggle the auto-insertion of `wait` steps between user events.
+   * When on, gaps ≥ `minRecordedWaitMs` show up in the IR; when off, the
+   * recorder emits only the action steps and the editor must add waits by
+   * hand. The setting is a runtime toggle so the Editor can flip it without
+   * restarting the recorder.
+   */
+  setRecordWaits(enabled: boolean): void {
+    this.recordWaits = enabled;
+  }
+
+  setMinRecordedWaitMs(ms: number): void {
+    this.minRecordedWaitMs = Math.max(0, ms);
   }
 
   isRunning(): boolean {
@@ -133,11 +158,23 @@ export class WebRecorder {
     if (!this.running) return;
     switch (payload.kind) {
       case 'click':
+        // A click that lands on a <select> opens the native option list — an
+        // OS-drawn popup Playwright can't replay by clicking. The element's
+        // `change` event (handled below) already carries the chosen value and
+        // replays faithfully via selectOption, so drop the redundant click.
+        if (payload.element?.tag === 'select') return;
         this.emitStep(this.buildClickStep(payload), payload);
         return;
-      case 'input':
+      case 'input': {
+        // Checkboxes / radios fire both a `click` (recorded as a click step
+        // that toggles the control on replay) and a `change`. Replaying the
+        // change as a `type` would call fill() on a non-text control and throw,
+        // so let the click step own the toggle and drop the change here.
+        const t = payload.element?.type;
+        if (t === 'checkbox' || t === 'radio') return;
         this.emitStep(this.buildInputStep(payload), payload);
         return;
+      }
       case 'key':
         this.emitStep(this.buildKeyStep(payload), payload);
         return;
@@ -147,6 +184,26 @@ export class WebRecorder {
   }
 
   private emitStep(step: Step, raw: RecorderPayload): void {
+    const now = raw.ts ?? Date.now();
+    if (this.recordWaits && this.lastEmitTs > 0) {
+      const diff = now - this.lastEmitTs;
+      if (diff >= this.minRecordedWaitMs) {
+        const waitStep: Step = {
+          id: ulid(),
+          type: 'wait',
+          enabled: true,
+          label: `${diff}ms 待機（録画）`,
+          params: { ms: diff },
+          meta: {
+            recordedAt: new Date(this.lastEmitTs).toISOString(),
+            recordedBy: 'web-recorder',
+            origin: 'recorded',
+          },
+        };
+        this.emitter.emit('step', { step: waitStep, raw });
+      }
+    }
+    this.lastEmitTs = now;
     this.emitter.emit('step', { step, raw });
   }
 
@@ -186,10 +243,18 @@ export class WebRecorder {
 
   private buildInputStep(p: RecorderInputPayload): Step {
     const target = elementToTarget(p.element, p.url);
-    const params: Record<string, unknown> = {
-      text: p.isSecret ? `\${secrets.${p.element.label ?? p.element.name ?? 'value'}}` : (p.value ?? ''),
-      clearFirst: true,
-    };
+    const isSelect = p.element.tag === 'select';
+    // A <select> can't be typed into; replay must call selectOption with the
+    // chosen option's value. `control: 'select'` routes the type handler there
+    // (see web-provider/handlers); text inputs keep the plain fill/type path.
+    const params: Record<string, unknown> = isSelect
+      ? { text: p.value ?? '', control: 'select' }
+      : {
+          text: p.isSecret
+            ? `\${secrets.${p.element.label ?? p.element.name ?? 'value'}}`
+            : (p.value ?? ''),
+          clearFirst: true,
+        };
     const step: Step = {
       id: ulid(),
       type: 'type',
@@ -203,7 +268,9 @@ export class WebRecorder {
       },
     };
     const lbl = p.element.label ?? p.element.placeholder ?? p.element.name ?? 'field';
-    step.label = `Type into "${trim(lbl, 30)}"${p.isSecret ? ' (secret)' : ''}`;
+    step.label = isSelect
+      ? `Select "${trim(p.value ?? '', 30)}" in "${trim(lbl, 30)}"`
+      : `Type into "${trim(lbl, 30)}"${p.isSecret ? ' (secret)' : ''}`;
     return step;
   }
 
