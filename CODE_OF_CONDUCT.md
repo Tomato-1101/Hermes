@@ -21,8 +21,9 @@ also applies when an individual is officially representing Hermes.
 ## Enforcement
 
 Issues that violate this Code of Conduct can be reported privately to the
-maintainer at **zhaounhaku@gmail.com**. Reports are confidential. The
-maintainer may, at their discretion:
+maintainer via GitHub — open a [private security advisory](https://github.com/Tomato-1101/Hermes/security/advisories/new)
+or contact [@Tomato-1101](https://github.com/Tomato-1101) directly. Reports are
+confidential. The maintainer may, at their discretion:
 
 1. Edit or delete the offending content.
 2. Issue a public or private warning.
