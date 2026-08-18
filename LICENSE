@@ -1,22 +1,21 @@
-License — TBD (To Be Determined)
-================================
+MIT License
 
-Hermes is in pre-alpha. The source is published in this repository so the
-design and implementation can be inspected. Until a final license is chosen
-and applied, the following applies:
+Copyright (c) 2026 Tomato-1101
 
-1. You MAY read the source code.
-2. You MAY clone the repository for personal evaluation and build the
-   application locally for your own use.
-3. You MAY NOT redistribute the source or any derivative work, in original
-   or modified form, in source or binary form.
-4. You MAY NOT use the name "Hermes" (when used to refer to this project)
-   for any forked or derivative project.
-5. Code contributed to this repository via pull request is assumed to be
-   offered under whatever permissive license the project eventually adopts.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-A definitive license — most likely Apache 2.0 or MIT — will replace this
-file before the first tagged release. Until then, please contact the
-maintainer if you need clarity on what you may or may not do.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-Maintainer: tomato (zhaounhaku@gmail.com)
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -24,9 +24,9 @@ churning fast. That said, **issues and discussion are welcome**.
 ## Ground rules
 
 1. **Open an issue first** for anything beyond a one-line typo fix.
-2. The license is still **TBD**; by submitting a PR you agree that your
-   contribution may be re-licensed under whatever permissive license the
-   project eventually adopts. See [`LICENSE`](LICENSE).
+2. Hermes is licensed under the **MIT License**; by submitting a PR you agree
+   that your contribution is offered under the same license. See
+   [`LICENSE`](LICENSE).
 3. Run `pnpm lint && pnpm typecheck && pnpm test` before submitting.
 4. Commits should be in imperative present tense ("add X", not "added X").
 5. Be excellent to each other — see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
